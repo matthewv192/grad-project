@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grad-project"
+version = "0.1.0"
+description = "TorQ package for Databento historical batch backfill into kdb+ HDB"
+requires-python = ">=3.10"
+dependencies = [
+    # Databento official Python client — handles batch job submission, polling,
+    # download, and DBN → DataFrame / CSV conversion.
+    "databento>=0.40.0",
+    # DataFrame manipulation used when transforming DBN output before writing CSV.
+    "pandas>=2.0.0",
+    # Columnar serialisation; required by databento for DBN → Parquet paths
+    # and by pandas for efficient I/O.
+    "pyarrow>=14.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+where = ["code"]
