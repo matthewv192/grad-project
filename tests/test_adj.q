@@ -42,26 +42,26 @@ assertClose:{[testName;actual;expected;tol]
 preSplitBars:([]
     date:  2024.06.07 2024.06.08 2024.06.09;
     sym:   `AAPL`AAPL`AAPL;
-    time:  3#2024.06.07T09:30:00.000000000;
-    instrument_id: 3#1001j;
+    time:  3#2024.06.07D09:30:00.000000000;
+    instrument_id: 3#1001;
     open:  190.0 191.0 192.0;
     high:  195.0 196.0 197.0;
     low:   189.0 190.0 191.0;
     close: 193.0 194.0 195.0;
-    volume:1000j 1100j 1200j
+    volume:1000 1100 1200
  );
 
 // Post-split AAPL bars (2024-06-10, 2024-06-11) — factor = 1.0
 postSplitBars:([]
     date:  2024.06.10 2024.06.11;
     sym:   `AAPL`AAPL;
-    time:  2#2024.06.10T09:30:00.000000000;
-    instrument_id: 2#1001j;
+    time:  2#2024.06.10D09:30:00.000000000;
+    instrument_id: 2#1001;
     open:  97.5 98.0;
     high:  99.0 99.5;
     low:   96.5 97.0;
     close: 98.0 98.5;
-    volume:2000j 2100j
+    volume:2000 2100
  );
 
 // Factors covering the full test window
@@ -120,13 +120,13 @@ assertEq[   "post-split volume unchanged"; (adjPost`volume)[0]; 2000j];
 barNoFactor:([]
     date:  enlist 2024.07.01;
     sym:   enlist `AAPL;
-    time:  enlist 2024.07.01T09:30:00.000000000;
-    instrument_id: enlist 1001j;
+    time:  enlist 2024.07.01D09:30:00.000000000;
+    instrument_id: enlist 1001;
     open:  enlist 150.0;
     high:  enlist 152.0;
     low:   enlist 149.0;
     close: enlist 151.0;
-    volume:enlist 5000j
+    volume:enlist 5000
  );
 
 adjNoFactor:applyAdj[barNoFactor;syntheticFactors];

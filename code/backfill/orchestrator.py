@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -282,10 +283,15 @@ def count_csv_rows(path: Path) -> int:
 
 
 def infer_date_from_filename(name: str) -> str:
-    """Extract YYYY-MM-DD from Databento filenames like <job_id>_20240115_trades.csv"""
-    for part in Path(name).stem.split("_"):
-        if len(part) == 8 and part.isdigit():
-            return f"{part[:4]}-{part[4:6]}-{part[6:8]}"
+    """Extract YYYY-MM-DD from a Databento CSV filename.
+
+    Handles both formats:
+      - xnas-itch-20240603.trades.csv  (actual Databento delivery format)
+      - DBNJ-XXXXX_20240603_trades.csv (legacy/documented format)
+    """
+    m = re.search(r"(\d{4})(\d{2})(\d{2})", name)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
     return ""
 
 
@@ -348,14 +354,20 @@ def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
         log.error(_j(f"Loader script not found: {loader_script}"))
         return
 
-    cmd = ["q", str(loader_script), "-e", "runLoader[];exit 0"]
+    # Pipe q commands via stdin so we can load the script then call runLoader[].
+    # cwd=package_home ensures relative \l paths inside loader.q resolve correctly.
+    q_script = "\\l code/backfill/loader.q\nrunLoader[]\nexit 0\n"
+    cmd = ["q", "-q"]
     env = {**os.environ,
            "STAGING_DIR": str(manifest_dir.parent.parent),
            "KDBHDB": hdb_dir,
            "TORQHOME": torq_home}
 
-    log.info(_j(f"Invoking q loader"))
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    log.info(_j(f"Invoking q loader: cwd={package_home}"))
+    result = subprocess.run(
+        cmd, input=q_script, text=True,
+        cwd=str(package_home), env=env, capture_output=True,
+    )
     for line in result.stdout.splitlines():
         log.info(_j(f"[q] {line}"))
     for line in result.stderr.splitlines():

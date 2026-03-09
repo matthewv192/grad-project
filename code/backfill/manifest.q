@@ -45,7 +45,7 @@ readManifest:{[manifestPath]
       (`$raw`request_id;
        `$raw`chunk_id;
        `$raw`databento_job_id;
-       `$raw`schema;
+       `$ssr[raw`schema;"-";"_"];    // normalise Databento "ohlcv-1m" → `ohlcv_1m
        "D"$ssr[raw`date;"-";"."];     // Python writes YYYY-MM-DD; q needs YYYY.MM.DD
        hsym`$raw`file_path;
        `$raw`checksum;
