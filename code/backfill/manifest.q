@@ -41,10 +41,12 @@ readManifest:{[manifestPath]
     // Building incrementally (m[`k]:v) after adding several symbols locks the
     // value vector to 11h (symbol list) and then rejects a date assignment.
     // Constructing via keys!values keeps the value vector as a generic list (0h).
-    m:(`request_id`chunk_id`databento_job_id`schema`date`file_path`checksum`symbols`row_count`min_ts`max_ts)!
+    m:(`request_id`chunk_id`databento_job_id`exchange`schema`date`file_path`checksum`symbols`row_count`min_ts`max_ts)!
       (`$raw`request_id;
        `$raw`chunk_id;
        `$raw`databento_job_id;
+       // "exchange" is the current key; "dataset" is the legacy key for old manifests
+       `$$[`exchange in key raw; raw`exchange; `dataset in key raw; raw`dataset; "XNAS.ITCH"];
        `$ssr[raw`schema;"-";"_"];    // normalise Databento "ohlcv-1m" → `ohlcv_1m
        "D"$ssr[raw`date;"-";"."];     // Python writes YYYY-MM-DD; q needs YYYY.MM.DD
        hsym`$raw`file_path;
@@ -90,8 +92,27 @@ scanManifestDir:{[stagingPath]
  };
 
 // ---------------------------------------------------------------------------
+// readJobStatus — look up the current status of a chunk in the job store.
+// Returns the status as a symbol, or `unknown if the record doesn't exist.
+// jobsDir: hsym path to staging/metadata/jobs/
+// chunkId: symbol
+// ---------------------------------------------------------------------------
+readJobStatus:{[jobsDir;chunkId]
+    p:` sv jobsDir,`$(string chunkId),".json";
+    if[not p in key p; :`unknown];
+    jr:@[{.j.k raze read0 x};p;{[e]`$""}];
+    if[jr~`$""; :`unknown];
+    `$jr`status
+ };
+
+// ---------------------------------------------------------------------------
 // processManifests — read, validate, and load all manifests in a directory.
 // loadChunk must be defined before this is called (it lives in loader.q).
+//
+// Job store awareness:
+//   verified → skip (already done; idempotency would catch it anyway)
+//   loading  → retry with a warning (loader crashed mid-run last time)
+//   anything else (pending, downloaded, failed, unknown) → process normally
 // ---------------------------------------------------------------------------
 processManifests:{[stagingPath]
     manifests:scanManifestDir stagingPath;
@@ -103,12 +124,26 @@ processManifests:{[stagingPath]
 
     .lg.o[`manifest;"processing ",string[count manifests]," manifest(s)"];
 
-    results:{[mPath]
+    // Derive jobs dir: staging/metadata/manifests → staging/metadata/jobs
+    jobsDir:hsym`$ssr[1_string hsym`$string stagingPath;"manifests";"jobs"];
+
+    results:{[jobsDir;mPath]
         .lg.o[`manifest;"reading ",string mPath];
 
         // readManifest can signal — catch errors, log, and return 0 rows for this chunk
         m:@[readManifest; mPath; {[e] .lg.o[`manifest;"read error: ",e]; 0b}];
         if[m~0b; :0j];
+
+        // Check job store status before doing any work
+        status:readJobStatus[jobsDir; m`chunk_id];
+        if[status=`verified;
+            .lg.o[`manifest;"skipping verified chunk: ",string m`chunk_id];
+            :0j
+        ];
+        if[status=`loading;
+            .lg.o[`manifest;"WARNING: retrying chunk stuck in loading state: ",
+                  string m`chunk_id]
+        ];
 
         valid:@[validateManifest; m; {[e] .lg.o[`manifest;"validation error: ",e]; 0b}];
         if[valid~0b; :0j];
@@ -116,7 +151,7 @@ processManifests:{[stagingPath]
         // loadChunk is defined in loader.q which loads this file
         n:@[loadChunk; m; {[e] .lg.o[`manifest;"load error: ",e]; 0j}];
         n
-    } each manifests;
+    }[jobsDir;] each manifests;
 
     total:sum results;
     .lg.o[`manifest;"total rows loaded: ",string total];

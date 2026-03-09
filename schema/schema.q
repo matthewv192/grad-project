@@ -9,7 +9,9 @@
 // Market data tables
 // ---------------------------------------------------------------------------
 
-// trades — individual print-level trade records from Databento XNAS.ITCH
+// trades — individual print-level trade records from Databento.
+// Works with any Databento dataset that supports the "trades" schema
+// (e.g. XNAS.ITCH, GLBX.MDP3, OPRA.PILLAR).
 // Databento field mapping:
 //   ts_event  -> time (nanosecond timestamp)
 //   instrument_id -> instrument_id
@@ -23,6 +25,7 @@ trades:([]
     sym:`symbol$();
     time:`timestamp$();
     instrument_id:`long$();
+    exchange:`symbol$();
     price:`float$();
     size:`long$();
     side:`symbol$();
@@ -30,12 +33,14 @@ trades:([]
     sequence:`long$()
  );
 
-// ohlcv_1m — one-minute OHLCV bars from Databento XNAS.ITCH
+// ohlcv_1m — one-minute OHLCV bars from Databento.
+// Works with any Databento dataset that supports the "ohlcv-1m" schema.
 // 'time' is the bar *open* time (start of the 1-minute window).
 ohlcv_1m:([]
     date:`date$();
     sym:`symbol$();
     time:`timestamp$();
+    exchange:`symbol$();
     instrument_id:`long$();
     open:`float$();
     high:`float$();
@@ -115,7 +120,7 @@ ref_adj_factors:([]
 ref_symbology_map:([]
     sym:`symbol$();
     instrument_id:`long$();
-    dataset:`symbol$();
+    exchange:`symbol$();
     valid_from:`date$();
     valid_to:`date$()
  );

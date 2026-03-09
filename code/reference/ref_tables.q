@@ -12,7 +12,7 @@ if[not `lg in key `.;
     .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}
  ];
 
-REF_DIR:hsym`$$[`STAGING_DIR in key .z.e;getenv`STAGING_DIR;"staging"],"/reference";
+REF_DIR:hsym`$$[count s:getenv`STAGING_DIR;s;"staging"],"/reference";
 
 // ---------------------------------------------------------------------------
 // loadRefSecurityMaster
@@ -71,7 +71,7 @@ loadSymbologyMap:{[]
         .lg.o[`ref;"symbology_map.csv not found — run backfill first to populate"];
         :0
     ];
-    // sym(S) instrument_id(J) dataset(S) valid_from(D) valid_to(D)
+    // sym(S) instrument_id(J) exchange(S) valid_from(D) valid_to(D)
     raw:("SJSDD";enlist csv) 0: p;
     `ref_symbology_map set raw;
     .lg.o[`ref;"loaded ",string[count raw]," rows into ref_symbology_map"];
@@ -87,7 +87,7 @@ resolveSymbol:{[instId;dsname;asofDate]
     if[0=count ref_symbology_map; :`];
     // Filter to matching instrument_id and dataset, then find row valid on asofDate
     t:select sym, valid_from from ref_symbology_map
-       where instrument_id=instId, dataset=dsname, valid_from<=asofDate, valid_to>=asofDate;
+       where instrument_id=instId, exchange=dsname, valid_from<=asofDate, valid_to>=asofDate;
     $[count t; first t`sym; `]
  };
 
@@ -98,7 +98,7 @@ resolveSymbol:{[instId;dsname;asofDate]
 resolveInstrumentId:{[symName;dsname;asofDate]
     if[0=count ref_symbology_map; :0Nj];
     t:select instrument_id, valid_from from ref_symbology_map
-       where sym=symName, dataset=dsname, valid_from<=asofDate, valid_to>=asofDate;
+       where sym=symName, exchange=dsname, valid_from<=asofDate, valid_to>=asofDate;
     $[count t; first t`instrument_id; 0Nj]
  };
 

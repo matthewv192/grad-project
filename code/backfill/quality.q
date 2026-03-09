@@ -120,12 +120,28 @@ checkQualityFromHDB:{[tableName;partDate]
 // runs checks, exits 0 on pass / 1 on failure.
 // ---------------------------------------------------------------------------
 checkQualityScript:{[]
-    hdbDir:hsym`$$[`KDBHDB in key .z.e;getenv`KDBHDB;"hdb"];
-    system "l ",1_string hdbDir;
+    hdbDir:hsym`$$[count s:getenv`KDBHDB;s;"hdb"];
+    hdbPath:1_string hdbDir;
 
-    tname:`$$[`QUALITY_TABLE in key .z.e;getenv`QUALITY_TABLE;"trades"];
-    dtStr:$[`QUALITY_DATE in key .z.e;getenv`QUALITY_DATE;"2024-01-15"];
+    // Verify HDB directory exists and has at least one date partition before loading.
+    // Give a clear diagnostic rather than a cryptic q error if the loader hasn't run.
+    loadErr:@[system;"l ",hdbPath;{[e]e}];
+    if[count loadErr;
+        .lg.e[`quality;"Cannot load HDB from: ",hdbPath,
+              " — run the backfill loader first (error: ",loadErr,")"];
+        exit 1
+    ];
+
+    tname:`$$[count s:getenv`QUALITY_TABLE;s;"trades"];
+    dtStr:$[count s:getenv`QUALITY_DATE;s;"2024-01-15"];
     dt:"D"$ssr[dtStr;"-";"."];
+
+    // Check the requested partition date exists in the HDB
+    if[not dt in date;
+        .lg.e[`quality;"Partition date ",string[dt]," not found in HDB at: ",hdbPath,
+              " — available dates: ",","sv string asc distinct date];
+        exit 1
+    ];
 
     .lg.o[`quality;"running quality checks: table=",string[tname]," date=",string dt];
 

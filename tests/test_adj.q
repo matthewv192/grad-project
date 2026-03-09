@@ -48,7 +48,8 @@ preSplitBars:([]
     high:  195.0 196.0 197.0;
     low:   189.0 190.0 191.0;
     close: 193.0 194.0 195.0;
-    volume:1000 1100 1200
+    volume:1000 1100 1200;
+    exchange:3#`$"XNAS.ITCH"
  );
 
 // Post-split AAPL bars (2024-06-10, 2024-06-11) — factor = 1.0
@@ -61,7 +62,8 @@ postSplitBars:([]
     high:  99.0 99.5;
     low:   96.5 97.0;
     close: 98.0 98.5;
-    volume:2000 2100
+    volume:2000 2100;
+    exchange:2#`$"XNAS.ITCH"
  );
 
 // Factors covering the full test window
@@ -126,7 +128,8 @@ barNoFactor:([]
     high:  enlist 152.0;
     low:   enlist 149.0;
     close: enlist 151.0;
-    volume:enlist 5000
+    volume:enlist 5000;
+    exchange:enlist `$"XNAS.ITCH"
  );
 
 adjNoFactor:applyAdj[barNoFactor;syntheticFactors];

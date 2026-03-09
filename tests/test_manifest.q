@@ -43,6 +43,7 @@ sampleManifest:()!();
 sampleManifest[`request_id]        :"req_test_001";
 sampleManifest[`chunk_id]          :"req_test_001_chunk000";
 sampleManifest[`databento_job_id]  :"DBNJ-TEST123";
+sampleManifest[`exchange]          :"XNAS.ITCH";
 sampleManifest[`schema]            :"trades";
 sampleManifest[`date]              :"2024-01-15";
 sampleManifest[`symbols]           :("AAPL";"MSFT");
@@ -68,6 +69,7 @@ assertEq["chunk_id";         m`chunk_id;         `req_test_001_chunk000];
 // Hyphens in symbols must be constructed from strings — `DBNJ-TEST123 in source
 // would be parsed as `DBNJ minus variable TEST123.
 assertEq["databento_job_id"; m`databento_job_id; `$"DBNJ-TEST123"];
+assertEq["exchange";         m`exchange;         `$"XNAS.ITCH"];
 assertEq["schema";           m`schema;           `trades];
 assertEq["date";             m`date;             2024.01.15];
 assertEq["row_count";        m`row_count;        12345j];

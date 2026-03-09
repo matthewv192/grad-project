@@ -19,6 +19,7 @@ Python <-> q boundary (unchanged from M1):
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import logging
@@ -101,6 +102,7 @@ class JobRecord:
     chunk_id: str
     request_id: str
     databento_job_id: str = ""
+    dataset: str = DEFAULT_DATASET
     schema: str = ""
     symbols: list = field(default_factory=list)
     date: str = ""          # ISO YYYY-MM-DD
@@ -251,6 +253,10 @@ def submit_job(client: db.Historical, dataset: str, symbols: list[str],
 def poll_until_done(client: db.Historical, job_id: str) -> dict:
     deadline = time.monotonic() + POLL_TIMEOUT_S
     while True:
+        # Check deadline before making the API call so a hung/slow API response
+        # cannot cause us to loop past the timeout indefinitely.
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Timed out waiting for job {job_id}")
         jobs = client.batch.list_jobs(states=["queued", "processing", "done"])
         match = next((j for j in jobs if j["id"] == job_id), None)
         if match is None:
@@ -265,8 +271,6 @@ def poll_until_done(client: db.Historical, job_id: str) -> dict:
             return match
         if state == "expired":
             raise RuntimeError(f"Job {job_id} expired")
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"Timed out waiting for job {job_id}")
         time.sleep(POLL_INTERVAL_S)
 
 
@@ -317,7 +321,7 @@ def download_csv(client: db.Historical, job_id: str,
 
 def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
                    symbols: list[str], csv_path: Path,
-                   manifest_dir: Path) -> dict:
+                   manifest_dir: Path, dataset: str = DEFAULT_DATASET) -> dict:
     manifest_dir.mkdir(parents=True, exist_ok=True)
     row_count = count_csv_rows(csv_path)
     checksum = sha256_of_file(csv_path)
@@ -325,6 +329,7 @@ def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
         "request_id": request_id,
         "chunk_id": chunk_id,
         "databento_job_id": job_id,
+        "exchange": dataset,
         "schema": schema,
         "date": infer_date_from_filename(csv_path.name),
         "symbols": symbols,
@@ -355,6 +360,22 @@ def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
         log.error(_j(f"Loader script not found: {loader_script}"))
         return
 
+    # Acquire an exclusive process-level lock before invoking the q loader.
+    # This prevents concurrent orchestrator processes (e.g. parallel chunk runs
+    # or a manual re-run) from calling .Q.dpft on the same partition simultaneously.
+    lock_path = Path(hdb_dir).parent / ".q_loader.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home)
+    finally:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
+
+
+def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
+                         hdb_dir: str, torq_home: str) -> None:
     # Pipe q commands via stdin so we can load the script then call runLoader[].
     # cwd=package_home ensures relative \l paths inside loader.q resolve correctly.
     q_script = "\\l code/backfill/loader.q\nrunLoader[]\nexit 0\n"
@@ -436,7 +457,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
                                 f"skipping download"))
                     write_manifest(chunk.request_id, chunk.chunk_id,
                                    record.databento_job_id, chunk.schema,
-                                   chunk.symbols, csv_path, manifest_dir)
+                                   chunk.symbols, csv_path, manifest_dir,
+                                   dataset=chunk.dataset)
                     record.status = "loaded"
                     job_store.save(record)
                     return True
@@ -445,7 +467,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
                              f"(no stored checksum), skipping to manifest"))
                 write_manifest(chunk.request_id, chunk.chunk_id,
                                record.databento_job_id, chunk.schema,
-                               chunk.symbols, csv_path, manifest_dir)
+                               chunk.symbols, csv_path, manifest_dir,
+                               dataset=chunk.dataset)
                 record.status = "loaded"
                 job_store.save(record)
                 return True
@@ -462,6 +485,7 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         record = JobRecord(
             chunk_id=chunk.chunk_id,
             request_id=chunk.request_id,
+            dataset=chunk.dataset,
             schema=chunk.schema,
             symbols=chunk.symbols,
             date=date_str,
@@ -517,7 +541,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
 
         # ---- Write manifest ----
         write_manifest(chunk.request_id, chunk.chunk_id, job_id,
-                       chunk.schema, chunk.symbols, csv_path, manifest_dir)
+                       chunk.schema, chunk.symbols, csv_path, manifest_dir,
+                       dataset=chunk.dataset)
 
         record.status = "loaded"
         job_store.save(record)
@@ -683,7 +708,7 @@ def main(argv=None):
             chunk = Chunk(
                 request_id=record.request_id,
                 chunk_id=record.chunk_id,
-                dataset=DEFAULT_DATASET,  # not stored in record; use default
+                dataset=record.dataset,
                 schema=record.schema,
                 symbols=record.symbols,
                 date=date.fromisoformat(record.date),

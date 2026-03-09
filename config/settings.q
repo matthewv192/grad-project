@@ -46,10 +46,10 @@ BACKFILL_MAX_RETRIES:3i;
 
 // Staging directory — where downloaded DBN/CSV files are stored temporarily.
 // Override via the STAGING_DIR env var (set in setenv.sh).
-STAGING_DIR:`$$[`STAGING_DIR in key .z.e;getenv`STAGING_DIR;"staging"];
+STAGING_DIR:`$$[count s:getenv`STAGING_DIR;s;"staging"];
 
 // HDB root directory
-HDB_DIR:`$$[`KDBHDB in key .z.e;getenv`KDBHDB;"hdb"];
+HDB_DIR:`$$[count s:getenv`KDBHDB;s;"hdb"];
 
 // Job metadata directory inside staging
 JOB_METADATA_DIR:`$string[STAGING_DIR],"/metadata";

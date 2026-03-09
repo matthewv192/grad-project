@@ -57,7 +57,7 @@ csvLines:(
 // Test 1: loadTrades writes partition and returns correct row count
 // ---------------------------------------------------------------------------
 
-rowCount:loadTrades[hsym`$testCSV; 2024.01.15];
+rowCount:loadTrades[hsym`$testCSV; 2024.01.15; `$"XNAS.ITCH"];
 assertEq["loadTrades row count"; rowCount; 3j];
 
 // ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ assertEq["partition dir exists"; `2024.01.15 in key HDB_DIR; 1b];
 // Test 3: Idempotency — loading the same file twice should not duplicate rows
 // ---------------------------------------------------------------------------
 
-rowCount2:loadTrades[hsym`$testCSV; 2024.01.15];
+rowCount2:loadTrades[hsym`$testCSV; 2024.01.15; `$"XNAS.ITCH"];
 assertEq["idempotent row count"; rowCount2; 3j];
 
 // Load the HDB and verify row count is still 3 (not 6)

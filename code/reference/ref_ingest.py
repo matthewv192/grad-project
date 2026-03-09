@@ -31,6 +31,9 @@ log = logging.getLogger(__name__)
 STAGING_DIR = os.environ.get("STAGING_DIR", os.path.join(os.path.dirname(__file__), "../../staging"))
 REF_DIR = os.path.join(STAGING_DIR, "reference")
 
+# Dataset identifier — override via DATABENTO_DATASET env var for non-XNAS deployments
+DEFAULT_DATASET = os.environ.get("DATABENTO_DATASET", "XNAS.ITCH")
+
 # Test symbols — must match whatever is used in the integration tests
 TEST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
 
@@ -110,7 +113,7 @@ def generate_adj_factors(symbols: list[str], start: date, end: date) -> list[dic
     return rows
 
 
-def generate_symbology_map(symbols: list[str]) -> list[dict]:
+def generate_symbology_map(symbols: list[str], dataset: str = DEFAULT_DATASET) -> list[dict]:
     """Return stub symbology mapping rows (instrument_id → sym, per dataset).
 
     In production, replace with real Databento instrument definition data.
@@ -122,7 +125,7 @@ def generate_symbology_map(symbols: list[str]) -> list[dict]:
         rows.append({
             "sym": sym,
             "instrument_id": 1000 + i,
-            "dataset": "XNAS.ITCH",
+            "dataset": dataset,
             "valid_from": "2000-01-01",
             "valid_to": "9999-12-31",
         })

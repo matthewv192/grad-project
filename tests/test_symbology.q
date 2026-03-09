@@ -20,7 +20,7 @@ assertEq:{[testName;actual;expected]
 // ---------------------------------------------------------------------------
 assertEq["schema has sym col";     `sym in cols ref_symbology_map;         1b];
 assertEq["schema has instr_id col"; `instrument_id in cols ref_symbology_map; 1b];
-assertEq["schema has dataset col"; `dataset in cols ref_symbology_map;     1b];
+assertEq["schema has exchange col"; `exchange in cols ref_symbology_map;     1b];
 assertEq["schema has valid_from";  `valid_from in cols ref_symbology_map;  1b];
 assertEq["schema has valid_to";    `valid_to in cols ref_symbology_map;    1b];
 
@@ -29,7 +29,7 @@ assertEq["schema has valid_to";    `valid_to in cols ref_symbology_map;    1b];
 // ---------------------------------------------------------------------------
 assertEq["sym type is symbol";          type ref_symbology_map`sym;          11h];
 assertEq["instrument_id type is long";  type ref_symbology_map`instrument_id; 7h];
-assertEq["dataset type is symbol";      type ref_symbology_map`dataset;       11h];
+assertEq["exchange type is symbol";      type ref_symbology_map`exchange;       11h];
 assertEq["valid_from type is date";     type ref_symbology_map`valid_from;    14h];
 assertEq["valid_to type is date";       type ref_symbology_map`valid_to;      14h];
 
@@ -43,7 +43,7 @@ assertEq["valid_to type is date";       type ref_symbology_map`valid_to;      14
 testMap:([]
     sym:`AAPL`MSFT`TSLA;
     instrument_id:1001 1002 1003j;
-    dataset:3#`$"XNAS.ITCH";
+    exchange:3#`$"XNAS.ITCH";
     valid_from:3#2020.01.01;
     valid_to:3#9999.12.31
  );
@@ -98,7 +98,7 @@ rawData:([]
  );
 
 // Call updateSymbologyMap with the raw data
-updateSymbologyMap[rawData; 2024.06.03];
+updateSymbologyMap[rawData; 2024.06.03; `$"XNAS.ITCH"];
 
 // Verify the CSV was created
 mapPath:hsym`$(tmpStaging,"/reference/symbology_map.csv");
@@ -111,7 +111,7 @@ assertEq["AAPL in symbology map"; `AAPL in written`sym; 1b];
 assertEq["MSFT in symbology map"; `MSFT in written`sym; 1b];
 
 // Verify idempotency: calling again with same data should not add rows
-updateSymbologyMap[rawData; 2024.06.03];
+updateSymbologyMap[rawData; 2024.06.03; `$"XNAS.ITCH"];
 written2:("SJSDD";enlist csv) 0: mapPath;
 assertEq["idempotent: still 2 rows after second call"; count written2; 2j];
 
@@ -127,7 +127,7 @@ newData:([]
     conditions:enlist `128;
     sequence:enlist 5j
  );
-updateSymbologyMap[newData; 2024.06.04];
+updateSymbologyMap[newData; 2024.06.04; `$"XNAS.ITCH"];
 written3:("SJSDD";enlist csv) 0: mapPath;
 assertEq["new sym TSLA added"; count written3; 3j];
 assertEq["TSLA in symbology map"; `TSLA in written3`sym; 1b];

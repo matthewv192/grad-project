@@ -23,14 +23,14 @@ assertEq:{[testName;actual;expected]
 
 assertEq["trades cols";
     cols trades;
-    `date`sym`time`instrument_id`price`size`side`conditions`sequence];
+    `date`sym`time`instrument_id`exchange`price`size`side`conditions`sequence];
 
-// Type chars: d=date s=symbol p=timestamp j=long f=float j=long s=symbol s=symbol j=long
+// Type chars: d=date s=symbol p=timestamp j=long s=symbol f=float j=long s=symbol s=symbol j=long
 assertEq["trades types";
     {exec t from meta x} trades;
-    "dspjfjssj"];
+    "dspjsfjssj"];
 
-assertEq["trades col count"; count cols trades; 9];
+assertEq["trades col count"; count cols trades; 10];
 
 // ---------------------------------------------------------------------------
 // ohlcv_1m
@@ -38,14 +38,14 @@ assertEq["trades col count"; count cols trades; 9];
 
 assertEq["ohlcv_1m cols";
     cols ohlcv_1m;
-    `date`sym`time`instrument_id`open`high`low`close`volume];
+    `date`sym`time`exchange`instrument_id`open`high`low`close`volume];
 
-// d=date s=symbol p=timestamp j=long f=float x4 j=long
+// d=date s=symbol p=timestamp s=symbol j=long f=float x4 j=long
 assertEq["ohlcv_1m types";
     {exec t from meta x} ohlcv_1m;
-    "dspjffffj"];
+    "dspsjffffj"];
 
-assertEq["ohlcv_1m col count"; count cols ohlcv_1m; 9];
+assertEq["ohlcv_1m col count"; count cols ohlcv_1m; 10];
 
 // ---------------------------------------------------------------------------
 // backfill_jobs
