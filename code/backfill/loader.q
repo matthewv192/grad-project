@@ -134,14 +134,16 @@ readOhlcvCSV:{[csvPath]
 // loadTrades — load one trades CSV into the HDB for a given partition date.
 // ---------------------------------------------------------------------------
 loadTrades:{[csvPath;partDate]
-    // Idempotency: if this date's trades partition already exists, skip the write.
-    // Reading the sym column file gives us the existing row count to return.
+    // Idempotency: skip if this date's trades partition already exists WITH data.
+    // An empty directory (0 rows) is a .Q.chk cross-fill placeholder — overwrite it.
     partDateDir:` sv HDB_DIR,`$string partDate;
     if[`trades in key partDateDir;
         n:count get ` sv partDateDir,`trades`sym;
-        .lg.o[`loader;"trades already loaded for ",string[partDate],
-              " (",string[n]," rows) — skipping"];
-        :n
+        if[n>0;
+            .lg.o[`loader;"trades already loaded for ",string[partDate],
+                  " (",string[n]," rows) — skipping"];
+            :n
+        ]
     ];
 
     .lg.o[`loader;"loading trades: ",string csvPath];
@@ -178,13 +180,16 @@ loadTrades:{[csvPath;partDate]
 // loadOhlcv — load one ohlcv-1m CSV into the HDB for a given partition date.
 // ---------------------------------------------------------------------------
 loadOhlcv:{[csvPath;partDate]
-    // Idempotency: skip if this date's ohlcv_1m partition already exists.
+    // Idempotency: skip if this date's ohlcv_1m partition already exists WITH data.
+    // An empty directory (0 rows) is a .Q.chk cross-fill placeholder — overwrite it.
     partDateDir:` sv HDB_DIR,`$string partDate;
     if[`ohlcv_1m in key partDateDir;
         n:count get ` sv partDateDir,`ohlcv_1m`sym;
-        .lg.o[`loader;"ohlcv_1m already loaded for ",string[partDate],
-              " (",string[n]," rows) — skipping"];
-        :n
+        if[n>0;
+            .lg.o[`loader;"ohlcv_1m already loaded for ",string[partDate],
+                  " (",string[n]," rows) — skipping"];
+            :n
+        ]
     ];
 
     .lg.o[`loader;"loading ohlcv_1m: ",string csvPath];
