@@ -71,10 +71,10 @@ grad-project/
 | # | Name | Status |
 |---|---|---|
 | 0 | Package Skeleton | ✅ Complete |
-| 1 | Batch Backfill Pipeline | 🔲 Next |
-| 2 | Chunking, Idempotency & Resilience | 🔲 Pending |
-| 3 | Reference Data Ingestion (Stubbed) | 🔲 Pending |
-| 4 | Corporate Action Adjustment Library | 🔲 Pending |
+| 1 | Batch Backfill Pipeline | ✅  Complete |
+| 2 | Chunking, Idempotency & Resilience | ✅  Complete |
+| 3 | Reference Data Ingestion (Stubbed) | ✅  Complete |
+| 4 | Corporate Action Adjustment Library | ✅  Complete |
 
 ---
 
