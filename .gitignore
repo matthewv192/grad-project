@@ -1,0 +1,23 @@
+# Downloaded market data and job state — can be large and is reproducible
+staging/
+
+# kdb+ HDB partitions — generated output, not source
+hdb/
+
+# Log files
+logs/
+
+# Python
+venv/
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+.eggs/
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
