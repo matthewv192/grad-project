@@ -33,6 +33,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import databento as db
+from metrics import ChunkMetrics, write_summary, print_metrics
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -388,13 +389,24 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
     Execute the full pipeline for one chunk. Returns True on success.
 
     Idempotency: if the job store already shows this chunk as loaded/verified,
-    we skip immediately. If it was previously downloaded, we skip straight to
-    manifest writing. If it was submitted/running, we pick up from polling.
+    we skip immediately. If it was previously downloaded, we verify the stored
+    checksum matches the file on disk before skipping to manifest writing
+    (re-downloads if the file was corrupted or deleted).
     """
     record = job_store.load(chunk.chunk_id)
     date_str = chunk.date.isoformat()
     # Databento uses exclusive end: to request a single day, end = day + 1
     end_str = (chunk.date + timedelta(days=1)).isoformat()
+
+    # Start metrics
+    metrics = ChunkMetrics(
+        chunk_id=chunk.chunk_id,
+        request_id=chunk.request_id,
+        schema=chunk.schema,
+        date=date_str,
+        symbols=chunk.symbols,
+    )
+    metrics.mark("total_start")
 
     # ---- Already done? ----
     if record and record.status in SKIP_STATUSES:
@@ -403,15 +415,40 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
 
     # ---- Resume from downloaded? ----
     if record and record.status == "downloaded" and record.file_path:
-        log.info(_j(f"Chunk {chunk.chunk_id} already downloaded, skipping to manifest"))
         csv_path = Path(record.file_path)
         if csv_path.exists():
-            write_manifest(chunk.request_id, chunk.chunk_id,
-                           record.databento_job_id, chunk.schema,
-                           chunk.symbols, csv_path, manifest_dir)
-            record.status = "loaded"
-            job_store.save(record)
-            return True
+            # Feature 5: verify stored checksum matches file on disk.
+            # Catches corruption or partial downloads from a previous run.
+            if record.checksum:
+                actual_checksum = sha256_of_file(csv_path)
+                if actual_checksum != record.checksum:
+                    log.warning(_j(
+                        f"Chunk {chunk.chunk_id}: checksum mismatch on resume "
+                        f"(expected {record.checksum[:16]}..., "
+                        f"got {actual_checksum[:16]}...) — re-downloading"
+                    ))
+                    record.status = "pending"
+                    record.checksum = ""
+                    job_store.save(record)
+                    # Fall through to re-submit below
+                else:
+                    log.info(_j(f"Chunk {chunk.chunk_id}: checksum OK, "
+                                f"skipping download"))
+                    write_manifest(chunk.request_id, chunk.chunk_id,
+                                   record.databento_job_id, chunk.schema,
+                                   chunk.symbols, csv_path, manifest_dir)
+                    record.status = "loaded"
+                    job_store.save(record)
+                    return True
+            else:
+                log.info(_j(f"Chunk {chunk.chunk_id} already downloaded "
+                             f"(no stored checksum), skipping to manifest"))
+                write_manifest(chunk.request_id, chunk.chunk_id,
+                               record.databento_job_id, chunk.schema,
+                               chunk.symbols, csv_path, manifest_dir)
+                record.status = "loaded"
+                job_store.save(record)
+                return True
 
     # ---- Resume from submitted/running? ----
     job_id = None
@@ -442,6 +479,7 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
                     f"Cost ${cost:.4f} exceeds limit ${MAX_COST_USD:.2f}"
                 )
 
+            metrics.mark("submit_start")
             record.status = "submitted"
             job_store.save(record)
 
@@ -451,12 +489,16 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
             record.databento_job_id = job_id
             record.status = "running"
             job_store.save(record)
+            metrics.mark("submit_end")
 
         # ---- Poll ----
+        metrics.mark("poll_start")
         job = poll_until_done(client, job_id)
+        metrics.mark("poll_end")
         log.info(_j(f"Job {job_id} done, cost={job.get('cost')}"))
 
         # ---- Download ----
+        metrics.mark("download_start")
         chunk_dir = staging_dir / chunk.chunk_id
         csv_paths = download_csv(client, job_id, chunk_dir)
         if not csv_paths:
@@ -469,6 +511,9 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         record.row_count = count_csv_rows(csv_path)
         record.status = "downloaded"
         job_store.save(record)
+        metrics.mark("download_end")
+        metrics.row_count = record.row_count
+        metrics.file_bytes = csv_path.stat().st_size
 
         # ---- Write manifest ----
         write_manifest(chunk.request_id, chunk.chunk_id, job_id,
@@ -476,6 +521,9 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
 
         record.status = "loaded"
         job_store.save(record)
+
+        metrics.mark("total_end")
+        metrics.save(staging_dir)
         return True
 
     except Exception as exc:
@@ -483,6 +531,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         record.status = "failed"
         record.error_msg = str(exc)
         job_store.save(record)
+        metrics.mark("total_end")
+        metrics.save(staging_dir)
         log.error(_j(f"Chunk {chunk.chunk_id} failed (attempt {record.retries}): {exc}"))
         return False
 
@@ -565,6 +615,13 @@ def parse_args(argv=None):
                         help="Print chunk plan and cost estimate; don't submit")
     parser.add_argument("--skip-load", action="store_true",
                         help="Skip invoking the q loader after download")
+    parser.add_argument("--download-only", action="store_true",
+                        help="Download and stage data only; do not invoke q loader "
+                             "(equivalent to --skip-load)")
+    parser.add_argument("--load-only", action="store_true",
+                        help="Skip API calls; run q loader on existing manifests only")
+    parser.add_argument("--metrics", action="store_true",
+                        help="Print per-chunk timing metrics and exit")
     return parser.parse_args(argv)
 
 
@@ -575,9 +632,28 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
 
+    # Normalise: --download-only implies --skip-load
+    skip_load = args.skip_load or args.download_only
+
     # ---- Status mode: no API key needed ----
     if args.status:
         print_status(STAGING_DIR, request_id=args.request_id)
+        return
+
+    # ---- Metrics mode: no API key needed ----
+    if args.metrics:
+        print_metrics(STAGING_DIR, request_id=args.request_id)
+        return
+
+    # ---- Load-only mode: run q loader on whatever manifests already exist ----
+    if args.load_only:
+        manifest_dir = STAGING_DIR / "metadata" / "manifests"
+        log.info(_j("load-only mode: running q loader on existing manifests"))
+        try:
+            run_q_loader(PACKAGE_HOME, manifest_dir)
+        except Exception as exc:
+            log.error(_j(f"q loader failed: {exc}"))
+            sys.exit(1)
         return
 
     api_key = os.environ.get("DATABENTO_API_KEY")
@@ -618,9 +694,9 @@ def main(argv=None):
             job_store.save(record)
 
             run_chunk(client, chunk, job_store, STAGING_DIR, manifest_dir,
-                      skip_load=args.skip_load)
+                      skip_load=skip_load)
 
-        if not args.skip_load:
+        if not skip_load:
             try:
                 run_q_loader(PACKAGE_HOME, manifest_dir)
             except Exception as exc:
@@ -630,7 +706,8 @@ def main(argv=None):
 
     # ---- Normal mode: require symbols/start/end ----
     if not args.symbols or not args.start or not args.end:
-        log.error(_j("--symbols, --start, --end are required (or use --retry-failed / --status)"))
+        log.error(_j("--symbols, --start, --end are required "
+                     "(or use --retry-failed / --status / --load-only)"))
         sys.exit(1)
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -669,7 +746,7 @@ def main(argv=None):
     failed = 0
     for chunk in chunks:
         ok = run_chunk(client, chunk, job_store, STAGING_DIR, manifest_dir,
-                       skip_load=args.skip_load)
+                       skip_load=skip_load)
         if ok:
             succeeded += 1
         else:
@@ -684,12 +761,17 @@ def main(argv=None):
         ))
 
     # ---- Invoke q loader for all downloaded manifests ----
-    if not args.skip_load and succeeded > 0:
+    if not skip_load and succeeded > 0:
         try:
             run_q_loader(PACKAGE_HOME, manifest_dir)
         except Exception as exc:
             log.error(_j(f"q loader failed: {exc}"))
             sys.exit(1)
+
+    # Emit metrics summary for this request
+    summary_path = write_summary(STAGING_DIR, request_id)
+    if summary_path:
+        log.info(_j(f"Metrics summary: {summary_path}"))
 
     if failed > 0:
         sys.exit(1)

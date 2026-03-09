@@ -107,3 +107,15 @@ ref_adj_factors:([]
     split_factor:`float$();
     dividend_factor:`float$()
  );
+
+// ref_symbology_map — maps Databento instrument_id → normalised sym, per dataset.
+// Auto-populated by loader.q after each partition write; also loadable from CSV
+// via loadSymbologyMap[] in ref_tables.q.
+// valid_from/valid_to support point-in-time lookups via aj.
+ref_symbology_map:([]
+    sym:`symbol$();
+    instrument_id:`long$();
+    dataset:`symbol$();
+    valid_from:`date$();
+    valid_to:`date$()
+ );

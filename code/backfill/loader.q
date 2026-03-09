@@ -27,6 +27,7 @@ if[not `lg in key `.;
 
 \l schema/schema.q
 \l code/backfill/manifest.q
+\l code/backfill/quality.q
 
 // HDB root — set by setenv.sh → KDBHDB, defaulting to ./hdb relative to cwd
 HDB_DIR:hsym`$$[`KDBHDB in key .z.e;getenv`KDBHDB;"hdb"];
@@ -216,6 +217,85 @@ loadOhlcv:{[csvPath;partDate]
  };
 
 // ---------------------------------------------------------------------------
+// updateJobRecord — write quality/verified status back to the Python job store.
+// Reads the existing JSON, updates status and optionally error_msg, writes back.
+// This lets the q loader mark a chunk as `verified after quality checks pass.
+// ---------------------------------------------------------------------------
+updateJobRecord:{[chunkId;newStatus;errMsg]
+    // Use getenv directly: in kdb+5, setenv does not update .z.e
+    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
+    jobsDir:hsym`$stagingStr,"/metadata/jobs";
+    p:` sv jobsDir,`$(string chunkId),".json";
+    if[not p in key p;
+        .lg.o[`loader;"job record not found for chunk: ",string chunkId];
+        :(::)
+    ];
+    raw:.j.k raze read0 p;
+    raw[`status]:string newStatus;
+    if[count errMsg; raw[`error_msg]:errMsg];
+    raw[`updated_at]:string .z.p;
+    // Write atomically via temp file then shell rename
+    tmp:` sv jobsDir,`$(string[chunkId],".tmp");
+    tmp 0: enlist .j.j raw;
+    @[system;"mv ",1_string[tmp]," ",1_string p;::];
+    .lg.o[`loader;"job record updated: ",string[chunkId]," → ",string newStatus]
+ };
+
+// ---------------------------------------------------------------------------
+// updateSymbologyMap — extract distinct (sym, instrument_id) pairs from the
+// loaded table and upsert into staging/reference/symbology_map.csv.
+// Accumulates across all loads; never removes existing entries.
+// ---------------------------------------------------------------------------
+updateSymbologyMap:{[raw;partDate]
+    // Use getenv directly: in kdb+5, setenv does not update .z.e
+    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
+    refDirStr:stagingStr,"/reference";
+    refDir:hsym`$refDirStr;
+    @[system;"mkdir -p ",refDirStr;::];
+    mapPath:` sv refDir,`symbology_map.csv;
+
+    // Extract distinct (sym, instrument_id) pairs from this partition
+    newRows:update dataset:`unknown, valid_from:partDate, valid_to:9999.12.31
+             from 0!(select by sym, instrument_id from raw);
+    newRows:`sym`instrument_id`dataset`valid_from`valid_to#newRows;
+
+    // Load existing map or start with empty schema-compatible table
+    existing:$[mapPath in key mapPath;
+        ("SJSDD";enlist csv) 0: mapPath;
+        ([] sym:`symbol$(); instrument_id:`long$(); dataset:`symbol$();
+            valid_from:`date$(); valid_to:`date$())
+    ];
+
+    // Merge: group by (sym,instrument_id), keeping first valid_from (oldest seen)
+    merged:existing,newRows;
+    combined:0!(select first dataset, first valid_from, last valid_to
+                by sym, instrument_id from merged);
+
+    if[count[combined]>count existing;
+        mapPath 0: csv 0: combined;
+        .lg.o[`loader;"symbology_map: total=",string[count combined]," sym-id pairs"]
+    ]
+ };
+
+// ---------------------------------------------------------------------------
+// updateMetrics — append load timing to the per-chunk metrics JSON file
+// written by Python's metrics.py.  Silently skips if the file doesn't exist.
+// ---------------------------------------------------------------------------
+updateMetrics:{[chunkId;requestId;loadNs;rowCount]
+    // Use getenv directly: in kdb+5, setenv does not update .z.e
+    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
+    metricsDir:hsym`$stagingStr,"/metrics/",string requestId;
+    p:` sv metricsDir,`$(string chunkId),".json";
+    if[not p in key p; :(::)];
+    raw:.j.k raze read0 p;
+    load_s:`float$loadNs%1000000000j;
+    raw[`load_s]:load_s;
+    raw[`row_count]:rowCount;
+    raw[`updated_at]:string .z.p;
+    p 0: enlist .j.j raw
+ };
+
+// ---------------------------------------------------------------------------
 // loadChunk — dispatch a validated manifest to the right loader function.
 // Called by processManifests in manifest.q.
 // ---------------------------------------------------------------------------
@@ -223,6 +303,10 @@ loadChunk:{[manifest]
     schema:manifest`schema;
     csvPath:manifest`file_path;
     partDate:manifest`date;
+    chunkId:manifest`chunk_id;
+    requestId:manifest`request_id;
+
+    t0:.z.p;
 
     // Route to the correct loader based on schema
     n:$[schema=`trades;
@@ -236,8 +320,47 @@ loadChunk:{[manifest]
     // E.g. if only trades exists for 2024-01-15, ohlcv_1m is created as empty there.
     .Q.chk HDB_DIR;
 
-    .lg.o[`loader;"chunk done: chunk_id=",string[manifest`chunk_id],
-          " rows=",string n];
+    loadNs:`long$.z.p-t0;
+
+    // Feature 5: row-count verification against manifest
+    expRows:manifest`row_count;
+    $[n=expRows;
+        .lg.o[`loader;"row_count verified: expected=",string[expRows]," actual=",string n];
+        .lg.e[`loader;"row_count MISMATCH: expected=",string[expRows]," actual=",string n]
+    ];
+
+    // Feature 4: data quality checks on the freshly loaded table global
+    qResult:$[n>0;
+        .[runQualityChecks; (value schema; schema; partDate);
+          {[e] .lg.e[`loader;"quality check error: ",e];
+           `dups`ordering_errors`nulls`total_nulls`passed`failed`checks!
+           (0j;0j;(`symbol$())!`long$();0j;0j;1j;3j)}];
+        ()
+    ];
+
+    // Update job record: verified if all quality checks pass; else keep loaded
+    $[0<count qResult;
+        $[qResult[`failed]=0j;
+            updateJobRecord[chunkId; `verified; ""];
+            updateJobRecord[chunkId; `loaded;
+                "quality failures: dups=",string[qResult`dups],
+                " ordering=",string[qResult`ordering_errors],
+                " nulls=",string[qResult`total_nulls]]
+        ];
+        ::
+    ];
+
+    // Feature 1: update symbology map with (sym,instrument_id) pairs from this load
+    if[n>0;
+        @[updateSymbologyMap; (value schema; partDate);
+          {[e] .lg.e[`loader;"symbology update error: ",e]}]
+    ];
+
+    // Feature 3: update per-chunk metrics file with load timing
+    @[updateMetrics; (chunkId; requestId; loadNs; n);
+      {[e] .lg.o[`loader;"metrics update skipped (file not found)"]}];
+
+    .lg.o[`loader;"chunk done: chunk_id=",string[chunkId]," rows=",string n];
     n
  };
 

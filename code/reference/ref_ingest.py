@@ -110,6 +110,25 @@ def generate_adj_factors(symbols: list[str], start: date, end: date) -> list[dic
     return rows
 
 
+def generate_symbology_map(symbols: list[str]) -> list[dict]:
+    """Return stub symbology mapping rows (instrument_id → sym, per dataset).
+
+    In production, replace with real Databento instrument definition data.
+    The loader auto-populates staging/reference/symbology_map.csv during backfill;
+    this stub is only needed for tests or pre-seeding the map.
+    """
+    rows = []
+    for i, sym in enumerate(symbols):
+        rows.append({
+            "sym": sym,
+            "instrument_id": 1000 + i,
+            "dataset": "XNAS.ITCH",
+            "valid_from": "2000-01-01",
+            "valid_to": "9999-12-31",
+        })
+    return rows
+
+
 def write_csv(path: str, rows: list[dict]) -> None:
     if not rows:
         log.warning(f"No rows to write to {path}")
@@ -139,6 +158,9 @@ def main():
         end=date(2024, 12, 31),
     )
     write_csv(os.path.join(REF_DIR, "adj_factors.csv"), af)
+
+    sm_map = generate_symbology_map(TEST_SYMBOLS)
+    write_csv(os.path.join(REF_DIR, "symbology_map.csv"), sm_map)
 
     log.info("Reference data generation complete")
 
