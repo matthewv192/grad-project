@@ -114,6 +114,7 @@ grad-project/
 
 ## Docs
 
+- [Architecture diagram](docs/architecture.md)
 - [How to run](docs/how_to_run.md)
 - [Setup guide](docs/setup.md)
 - [Config reference](docs/config_reference.md)

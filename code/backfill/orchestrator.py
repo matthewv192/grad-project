@@ -100,6 +100,7 @@ class Chunk:
     schema: str
     symbols: list
     date: date   # single calendar day
+    stype_in: str = "raw_symbol"
 
 
 @dataclass
@@ -120,6 +121,7 @@ class JobRecord:
     status: str = "pending"
     retries: int = 0
     error_msg: str = ""
+    failure_type: str = ""     # api_error | download_error | parse_error | load_error | quality_error
     file_path: str = ""        # primary CSV (used for checksum / row_count)
     file_paths: list = field(default_factory=list)  # all CSVs from this job
     checksum: str = ""
@@ -193,7 +195,7 @@ class JobStore:
 
 def generate_chunks(request_id: str, symbols: list[str], start: date,
                     end: date, chunk_size: int, schema: str,
-                    dataset: str) -> list[Chunk]:
+                    dataset: str, stype_in: str = "raw_symbol") -> list[Chunk]:
     """
     Split a backfill request into one-day × one-symbol-batch chunks.
 
@@ -218,6 +220,7 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
                 schema=schema,
                 symbols=batch,
                 date=d,
+                stype_in=stype_in,
             ))
         d += timedelta(days=1)
     return chunks
@@ -227,12 +230,31 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
 # Cost estimation
 # ---------------------------------------------------------------------------
 
+def _classify_error(exc: Exception) -> str:
+    """Categorise an exception into a pipeline failure type."""
+    msg = str(exc).lower()
+    if isinstance(exc, db.BentoError):
+        return "api_error"
+    if "timed out" in msg or "expired" in msg or "failed at databento" in msg:
+        return "api_error"
+    if "cost" in msg or "budget" in msg or "limit" in msg:
+        return "api_error"
+    if "no csv files" in msg or "checksum" in msg:
+        return "download_error"
+    if "cannot infer date" in msg or "parsing" in msg:
+        return "parse_error"
+    if "manifest" in msg or "permission denied" in msg:
+        return "load_error"
+    return "api_error"
+
+
 def estimate_cost(client: db.Historical, dataset: str, symbols: list[str],
-                  schema: str, start: str, end: str) -> float:
+                  schema: str, start: str, end: str,
+                  stype_in: str = "raw_symbol") -> float:
     try:
         return float(client.metadata.get_cost(
             dataset=dataset, symbols=symbols, schema=schema,
-            start=start, end=end, stype_in="raw_symbol",
+            start=start, end=end, stype_in=stype_in,
         ))
     except db.BentoError as exc:
         # Databento API errors (e.g. unknown dataset, bad symbol) — log and
@@ -250,9 +272,10 @@ def estimate_cost(client: db.Historical, dataset: str, symbols: list[str],
 # ---------------------------------------------------------------------------
 
 def submit_job(client: db.Historical, dataset: str, symbols: list[str],
-               schema: str, start: str, end: str) -> dict:
+               schema: str, start: str, end: str,
+               stype_in: str = "raw_symbol") -> dict:
     log.info(_j(f"Submitting: dataset={dataset} schema={schema} "
-                f"symbols={symbols} start={start} end={end}"))
+                f"symbols={symbols} start={start} end={end} stype_in={stype_in}"))
     # Request CSV directly so no local DBN-to-CSV conversion is needed.
     # pretty_px/pretty_ts give human-readable prices and ISO timestamps,
     # which is exactly what loader.q expects. map_symbols=True adds the
@@ -262,7 +285,7 @@ def submit_job(client: db.Historical, dataset: str, symbols: list[str],
         start=start, end=end,
         encoding="csv", compression=None,
         pretty_px=True, pretty_ts=True, map_symbols=True,
-        stype_in="raw_symbol",
+        stype_in=stype_in,
     )
     log.info(_j(f"Submitted job_id={job['id']} state={job.get('state')}"))
     return job
@@ -568,7 +591,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         # ---- Submit if we don't already have a job_id ----
         if job_id is None:
             cost = estimate_cost(client, chunk.dataset, chunk.symbols,
-                                 chunk.schema, date_str, end_str)
+                                 chunk.schema, date_str, end_str,
+                                 stype_in=chunk.stype_in)
             if MAX_COST_USD > 0 and cost > MAX_COST_USD:
                 raise RuntimeError(
                     f"Cost ${cost:.4f} exceeds limit ${MAX_COST_USD:.2f}"
@@ -579,7 +603,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
             job_store.save(record)
 
             job = submit_job(client, chunk.dataset, chunk.symbols,
-                             chunk.schema, date_str, end_str)
+                             chunk.schema, date_str, end_str,
+                             stype_in=chunk.stype_in)
             job_id = job["id"]
             record.databento_job_id = job_id
             record.status = "running"
@@ -633,13 +658,16 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         return True
 
     except Exception as exc:
+        ft = _classify_error(exc)
         record.retries += 1
         record.status = "failed"
         record.error_msg = str(exc)
+        record.failure_type = ft
         job_store.save(record)
+        metrics.failure_type = ft
         metrics.mark("total_end")
         metrics.save(staging_dir)
-        log.error(_j(f"Chunk {chunk.chunk_id} failed (attempt {record.retries}): {exc}"))
+        log.error(_j(f"Chunk {chunk.chunk_id} failed [{ft}] (attempt {record.retries}): {exc}"))
         return False
 
 
@@ -732,7 +760,8 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
         # Print failed chunks with their error messages
         for r in recs:
             if r.status == "failed":
-                print(f"  FAILED {r.chunk_id}: {r.error_msg[:80]}")
+                ft = f" [{r.failure_type}]" if r.failure_type else ""
+                print(f"  FAILED {r.chunk_id}{ft}: {r.error_msg[:80]}")
 
     print()
 
@@ -773,6 +802,9 @@ def parse_args(argv=None):
                         help="Print per-chunk timing metrics and exit")
     parser.add_argument("--workers", type=int, default=4,
                         help="Maximum parallel chunk workers (default: 4)")
+    parser.add_argument("--stype-in", default="raw_symbol",
+                        help="Databento symbol type for submit/cost calls "
+                             "(default: raw_symbol)")
     return parser.parse_args(argv)
 
 
@@ -893,7 +925,8 @@ def main(argv=None):
             ))
 
     chunks = generate_chunks(request_id, symbols, start, end,
-                             args.chunk_size, args.schema, args.dataset)
+                             args.chunk_size, args.schema, args.dataset,
+                             stype_in=args.stype_in)
 
     log.info(_j(f"request_id={request_id} chunks={len(chunks)} "
                 f"symbols={len(symbols)} dates={start}..{end}"))
@@ -917,10 +950,12 @@ def main(argv=None):
 
     # ---- Run all chunks (parallel) ----
     log.info(_j(f"Running {len(chunks)} chunk(s) with up to {args.workers} worker(s)"))
+    _wall_start = time.time()
     succeeded, failed = _run_chunks_parallel(
         client, chunks, job_store, STAGING_DIR, manifest_dir,
         skip_load=skip_load, max_workers=args.workers,
     )
+    _wall_s = time.time() - _wall_start
 
     log.info(_j(f"Chunks complete: {succeeded} succeeded, {failed} failed"))
 
@@ -939,7 +974,7 @@ def main(argv=None):
             sys.exit(1)
 
     # Emit metrics summary for this request
-    summary_path = write_summary(STAGING_DIR, request_id)
+    summary_path = write_summary(STAGING_DIR, request_id, wall_s=_wall_s)
     if summary_path:
         log.info(_j(f"Metrics summary: {summary_path}"))
 

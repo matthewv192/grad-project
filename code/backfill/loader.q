@@ -225,8 +225,10 @@ loadTrades:{[csvPath;partDate;dataset]
     // Add partition columns: date (from filename) and exchange (from manifest dataset)
     raw:update date:partDate, exchange:dataset from raw;
 
-    // Sort by sym then time — required for binary search queries in the HDB
-    raw:`sym`time xasc raw;
+    // Sort by sym then time — required for binary search queries in the HDB.
+    // Drop date before xasc: when an HDB is loaded in the same q session,
+    // .Q.xasc intercepts xasc and errors with 'dup date if `date` is present.
+    raw:update date:partDate from `sym`time xasc delete date from raw;
 
     // Acquire per-partition write lock (atomic mkdir) before writing.
     // Re-check under lock: another process may have written between our check and lock.
@@ -252,7 +254,18 @@ loadTrades:{[csvPath;partDate;dataset]
         existing:update date:partDate from existing;
         // schema-select: handle old partitions that may be missing the exchange column
         existing:(cols[trades] inter cols existing)#existing;
-        merged:`sym`time xasc existing,raw
+        // Reorder raw to match existing's column order before concatenation.
+        // The column order of `raw` depends on how `update date,exchange` appended
+        // those columns, which varies based on whether `trades` global is the empty
+        // schema stub (date-first) or a previously loaded HDB (also date-first after
+        // schema-select) or a previous .Q.dpft result (date near end).
+        // Using `cols[existing]` as the authoritative order makes the merge robust
+        // regardless of session state.
+        // Drop `date` before xasc: when an HDB is loaded in the same q session,
+        // .Q.xasc intercepts xasc and errors with 'dup date if `date` is present.
+        // Restore it afterwards.
+        noDate:delete date from existing,((cols existing)#raw);
+        merged:update date:partDate from `sym`time xasc noDate
     ];
 
     // .Q.dpft[d;p;f;t] writes a splayed partition and updates the sym file.
@@ -294,7 +307,7 @@ loadOhlcv:{[csvPath;partDate;dataset]
     ];
 
     raw:update date:partDate, exchange:dataset from raw;
-    raw:`sym`time xasc raw;
+    raw:update date:partDate from `sym`time xasc delete date from raw;
 
     // Acquire per-partition write lock (atomic mkdir) before writing.
     // Re-check under lock: another process may have written between our check and lock.
@@ -316,7 +329,8 @@ loadOhlcv:{[csvPath;partDate;dataset]
         existing:unenumAll get ` sv partDateDir,`ohlcv_1m;
         existing:update date:partDate from existing;
         existing:(cols[ohlcv_1m] inter cols existing)#existing;
-        merged:`sym`time xasc existing,raw
+        noDate:delete date from existing,((cols existing)#raw);
+        merged:update date:partDate from `sym`time xasc noDate
     ];
 
     `ohlcv_1m set merged;
@@ -401,6 +415,29 @@ flushSymbologyMap:{[]
  };
 
 // ---------------------------------------------------------------------------
+// updateJobRecordTimestamps — write min_ts/max_ts back to the Python job store.
+// Called after .Q.dpft completes to record the actual data time range.
+// Observability only — no validation is performed.
+// ---------------------------------------------------------------------------
+updateJobRecordTimestamps:{[chunkId;minTs;maxTs]
+    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
+    jobsDir:hsym`$stagingStr,"/metadata/jobs";
+    p:` sv jobsDir,`$(string chunkId),".json";
+    if[not p in key p;
+        .lg.o[`loader;"timestamp record not found for chunk: ",string chunkId];
+        :(::)
+    ];
+    raw:.j.k raze read0 p;
+    raw[`min_ts]:string minTs;
+    raw[`max_ts]:string maxTs;
+    raw[`updated_at]:string .z.p;
+    tmp:` sv jobsDir,`$(string[chunkId],".tmp");
+    tmp 0: enlist .j.j raw;
+    mvErr:@[system;"mv ",1_string[tmp]," ",1_string p;{[e]e}];
+    if[count mvErr; @[hdel;tmp;::]; '"updateJobRecordTimestamps: rename failed: ",mvErr]
+ };
+
+// ---------------------------------------------------------------------------
 // updateMetrics — append load timing to the per-chunk metrics JSON file
 // written by Python's metrics.py.  Silently skips if the file doesn't exist.
 // ---------------------------------------------------------------------------
@@ -480,6 +517,20 @@ loadChunk:{[manifest]
                     " nulls=",string[qResult`total_nulls]]]
         ];
         ::
+    ];
+
+    // Feature 3b: update job record with min/max timestamps from written partition
+    // (observability — records the actual data time range after the partition write)
+    if[n>0;
+        partDateDir:` sv HDB_DIR,`$string partDate;
+        timePath:` sv partDateDir,schema,`time;
+        if[timePath in key timePath;
+            times:get timePath;
+            if[count times;
+                @[updateJobRecordTimestamps; (chunkId; min times; max times);
+                  {[e] .lg.o[`loader;"ts update skipped: ",e]}]
+            ]
+        ]
     ];
 
     // Feature 1: update symbology map with (sym,instrument_id) pairs from this load

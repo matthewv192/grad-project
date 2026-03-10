@@ -220,8 +220,11 @@ select open, high, low, close, volume by exchange
 / Raw (unadjusted) bars
 getUnadjusted[`ohlcv_1m; `AAPL; 2024.06.03; 2024.06.05]
 
-/ Bars with adj_close column appended
-getAdjustedClose[`AAPL; 2024.06.03; 2024.06.05; `split]
+/ Backward-adjusted — prices in post-split (current) terms
+getAdjustedClose[`AAPL; 2024.06.03; 2024.06.05; `backward]
+
+/ Forward-adjusted — prices in pre-split (historical) terms
+getAdjustedClose[`AAPL; 2024.06.03; 2024.06.05; `forward]
 ```
 
 ---

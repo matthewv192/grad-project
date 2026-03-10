@@ -28,9 +28,9 @@ assertGt:{[testName;actual;threshold]
 // Setup
 // ---------------------------------------------------------------------------
 
-TEST_DATE:"D"$ssr[$[`INTEGRATION_TEST_DATE in key .z.e;getenv`INTEGRATION_TEST_DATE;"2024-01-15"];"-";"."];
-TEST_SYM:`$$[`INTEGRATION_TEST_SYM in key .z.e;getenv`INTEGRATION_TEST_SYM;"AAPL"];
-HDB_PATH:hsym`$$[`KDBHDB in key .z.e;getenv`KDBHDB;"hdb"];
+TEST_DATE:"D"$ssr[$[count s:getenv`INTEGRATION_TEST_DATE;s;"2024-01-15"];"-";"."];
+TEST_SYM:`$$[count s:getenv`INTEGRATION_TEST_SYM;s;"AAPL"];
+HDB_PATH:hsym`$$[count s:getenv`KDBHDB;s;"hdb"];
 
 -1 "Integration test: date=",string[TEST_DATE]," sym=",string[TEST_SYM];
 -1 "HDB path: ",string HDB_PATH;
@@ -43,7 +43,8 @@ HDB_PATH:hsym`$$[`KDBHDB in key .z.e;getenv`KDBHDB;"hdb"];
 // ---------------------------------------------------------------------------
 
 partDir:` sv HDB_PATH,`$string[TEST_DATE];
-assertEq["partition dir exists"; partDir in key HDB_PATH; 1b];
+// key HDB_PATH returns plain sym names (e.g. `2024.01.17), not full paths
+assertEq["partition dir exists"; (`$string TEST_DATE) in key HDB_PATH; 1b];
 
 // ---------------------------------------------------------------------------
 // Test 2: trades table exists in partition
@@ -69,10 +70,10 @@ assertEq["sorted by sym time"; t~`sym`time xasc t; 1b];
 // Test 5: No duplicate (sym; time; sequence) keys
 // ---------------------------------------------------------------------------
 
-// Group by the natural key and check no group has more than 1 row
-dupeCount:count select from trades
-    where date=TEST_DATE, sym=TEST_SYM,
-    {1<count x} fby ([]sym;time;sequence);
+// Compare total rows vs distinct (sym,time,exchange,sequence) rows.
+// Any difference means duplicate natural keys exist.
+natkeys:select sym,time,exchange,sequence from trades where date=TEST_DATE, sym=TEST_SYM;
+dupeCount:(count natkeys)-(count distinct natkeys);
 assertEq["no duplicate natural keys"; dupeCount; 0j];
 
 // ---------------------------------------------------------------------------
@@ -91,11 +92,10 @@ assertEq["sizes positive"; badSize; 0j];
 // Report
 // ---------------------------------------------------------------------------
 
-if[count failures;
-    -1 "FAIL: ",string[count failures]," test(s) failed:";
-    -1 each string failures;
-    exit 1
-];
+$[count failures;
+    (-1 "FAIL: ",string[count failures]," test(s) failed:"; -1 each string failures; exit 1);
+    0N
+ ];
 -1 "PASS: all integration tests passed (",string[rowCount]," rows for ",
    string[TEST_SYM]," on ",string[TEST_DATE],")";
 exit 0

@@ -137,6 +137,41 @@ assertEq["new sym TSLA added"; count written3; 3j];
 assertEq["TSLA in symbology map"; `TSLA in written3`sym; 1b];
 
 // ---------------------------------------------------------------------------
+// Test 5: Cross-exchange resolution — same sym carries different instrument_id
+//         on different exchanges; exchange must be the discriminator.
+// ---------------------------------------------------------------------------
+
+// Seed: AAPL has instrument_id=1001 on XNAS but 5001 on XNYS.
+// Both rows have sym=`AAPL, so without exchange discrimination the lookup
+// would be ambiguous.
+crossExchangeMap:([]
+    sym:          `AAPL`AAPL`MSFT;
+    instrument_id:1001 5001 1002j;
+    exchange:     (`$"XNAS.ITCH";`$"XNYS.PILLAR";`$"XNAS.ITCH");
+    valid_from:   3#2020.01.01;
+    valid_to:     3#9999.12.31
+ );
+`ref_symbology_map set crossExchangeMap;
+
+// resolveInstrumentId must use exchange to return the right id per exchange
+assertEq["AAPL instrument_id on XNAS";
+    resolveInstrumentId[`AAPL; `$"XNAS.ITCH";   2024.06.03]; 1001j];
+assertEq["AAPL instrument_id on XNYS";
+    resolveInstrumentId[`AAPL; `$"XNYS.PILLAR"; 2024.06.03]; 5001j];
+
+// resolveSymbol must use exchange to return the right sym per instrument_id
+assertEq["instr_id 1001 on XNAS resolves to AAPL";
+    resolveSymbol[1001j; `$"XNAS.ITCH";   2024.06.03]; `AAPL];
+assertEq["instr_id 5001 on XNYS resolves to AAPL";
+    resolveSymbol[5001j; `$"XNYS.PILLAR"; 2024.06.03]; `AAPL];
+
+// Wrong exchange — instrument_id exists but not on that exchange → not found
+assertEq["instr_id 1001 on XNYS → null sym";
+    resolveSymbol[1001j; `$"XNYS.PILLAR"; 2024.06.03]; `];
+assertEq["AAPL on unknown exchange → 0N";
+    resolveInstrumentId[`AAPL; `$"UNKNOWN.EXCH"; 2024.06.03]; 0Nj];
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 

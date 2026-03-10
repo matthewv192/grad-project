@@ -26,6 +26,7 @@ class ChunkMetrics:
     symbols: list = field(default_factory=list)
     row_count: int = 0
     file_bytes: int = 0
+    failure_type: str = ""    # api_error | download_error | parse_error | load_error | quality_error
 
     # Stage timestamps (time.monotonic() seconds)
     submit_start: float = 0.0
@@ -108,29 +109,47 @@ def load_chunk_metrics(staging_dir: Path, request_id: str) -> list[dict]:
     return result
 
 
-def write_summary(staging_dir: Path, request_id: str) -> Path | None:
-    """Aggregate all chunk metrics into a summary.json for the request."""
+def write_summary(staging_dir: Path, request_id: str,
+                  wall_s: float | None = None) -> Path | None:
+    """Aggregate all chunk metrics into a summary.json for the request.
+
+    wall_s: actual elapsed wall-clock seconds for the whole parallel run,
+            measured by the caller around _run_chunks_parallel.  When chunks
+            run concurrently this is much less than the sum of individual
+            chunk durations.  If omitted, wall_s is left as null in the JSON.
+    """
     chunks = load_chunk_metrics(staging_dir, request_id)
     if not chunks:
         return None
 
     total_rows = sum(c.get("row_count", 0) for c in chunks)
     total_bytes = sum(c.get("file_bytes", 0) for c in chunks)
-    total_s = sum(c.get("total_s", 0.0) for c in chunks)
+    sum_chunk_s = sum(c.get("total_s", 0.0) for c in chunks)
+
+    failure_breakdown: dict[str, int] = {}
+    for c in chunks:
+        ft = c.get("failure_type", "")
+        if ft:
+            failure_breakdown[ft] = failure_breakdown.get(ft, 0) + 1
 
     summary = {
         "request_id": request_id,
         "chunk_count": len(chunks),
         "total_rows": total_rows,
         "total_bytes": total_bytes,
-        "total_wall_s": total_s,
-        "avg_chunk_s": total_s / len(chunks) if chunks else 0.0,
+        # wall_s  — real elapsed time (parallel workers overlap, so wall_s ≤ sum_chunk_s)
+        # sum_chunk_s — sum of all individual chunk durations (useful for CPU accounting)
+        "wall_s": round(wall_s, 3) if wall_s is not None else None,
+        "sum_chunk_s": round(sum_chunk_s, 3),
+        "avg_chunk_s": round(sum_chunk_s / len(chunks), 3) if chunks else 0.0,
         "stage_totals": {
             "submit_s": sum(c.get("submit_s", 0.0) for c in chunks),
             "poll_s": sum(c.get("poll_s", 0.0) for c in chunks),
             "download_s": sum(c.get("download_s", 0.0) for c in chunks),
             "load_s": sum(c.get("load_s", 0.0) for c in chunks),
         },
+        "failed_chunk_count": len(failure_breakdown),
+        "failure_breakdown": failure_breakdown,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -182,7 +201,15 @@ def print_metrics(staging_dir: Path, request_id: str | None = None) -> None:
             with open(summary_path) as f:
                 s = json.load(f)
             mb = s.get("total_bytes", 0) / 1024 / 1024
+            wall = s.get("wall_s")
+            wall_str = f"{wall:.1f}s wall" if wall is not None else "wall_s unknown"
             print(f"\n  Summary: {s.get('total_rows', 0):,} rows, "
-                  f"{mb:.1f} MB, {s.get('total_wall_s', 0.0):.1f}s total")
+                  f"{mb:.1f} MB, {wall_str}, "
+                  f"{s.get('sum_chunk_s', 0.0):.1f}s total across chunks")
+            if s.get("failure_breakdown"):
+                breakdown_str = ", ".join(
+                    f"{k}: {v}" for k, v in s["failure_breakdown"].items()
+                )
+                print(f"  Failure breakdown: {breakdown_str}")
 
     print()

@@ -97,6 +97,7 @@ Python logging uses JSON format on stdout. Redirect to `logs/` if needed:
 | `--download-only` | No | Download and stage only; do not invoke the q loader |
 | `--load-only` | No | Skip API calls; run the q loader on existing staged manifests |
 | `--metrics` | No | Print per-chunk timing metrics and exit |
+| `--stype-in` | No | Databento symbol type passed to submit/cost API calls (default: `raw_symbol`). Use `continuous` for continuous futures contracts or `instrument_id` for numeric IDs. |
 
 ---
 

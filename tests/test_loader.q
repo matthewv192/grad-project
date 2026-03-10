@@ -99,6 +99,103 @@ assertEq["trades price type"; type t`price; 9h];    // float list
 assertEq["trades size type";  type t`size;  7h];    // long list
 
 // ---------------------------------------------------------------------------
+// Setup for tests 6-11: additional CSV files
+// ---------------------------------------------------------------------------
+
+// Databento ohlcv-1m CSV (10 columns, 3 rows across 2 syms, date 2024.01.16)
+testOhlcvCSV:"/tmp/grad_test_ohlcv.csv";
+(hsym`$testOhlcvCSV) 0: (
+    "ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume,symbol";
+    "2024-01-16T09:30:00.000000000,33,1,1001,185.50,186.00,185.00,185.75,10000,AAPL";
+    "2024-01-16T09:31:00.000000000,33,1,1001,185.75,186.25,185.50,186.00,8000,AAPL";
+    "2024-01-16T09:30:00.000000000,33,1,1002,374.20,375.00,373.50,374.75,5000,MSFT" );
+
+// Header-only CSVs (no data rows)
+emptyTradesCSV:"/tmp/grad_test_empty_trades.csv";
+(hsym`$emptyTradesCSV) 0: enlist
+    "ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,symbol";
+
+emptyOhlcvCSV:"/tmp/grad_test_empty_ohlcv.csv";
+(hsym`$emptyOhlcvCSV) 0: enlist
+    "ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume,symbol";
+
+// XNYS.PILLAR trades CSV for 2024.01.15 (same date as XNAS data loaded in Tests 1-3)
+xnysTradesCSV:"/tmp/grad_test_xnys_trades.csv";
+(hsym`$xnysTradesCSV) 0: (
+    "ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,symbol";
+    "2024-01-15T09:30:00.000000100,2024-01-15T09:30:00.000000000,80,2,2001,T,A,0,185.45,300,128,1000,1,AAPL" );
+
+// ---------------------------------------------------------------------------
+// Test 6: loadTrades on empty CSV returns 0 without error
+// ---------------------------------------------------------------------------
+
+emptyTradesCount:loadTrades[hsym`$emptyTradesCSV; 2024.01.20; `$"XNAS.ITCH"];
+assertEq["empty trades CSV returns 0"; emptyTradesCount; 0j];
+
+// ---------------------------------------------------------------------------
+// Test 7: loadOhlcv on empty CSV returns 0 without error
+// ---------------------------------------------------------------------------
+
+emptyOhlcvCount:loadOhlcv[hsym`$emptyOhlcvCSV; 2024.01.20; `$"XNAS.ITCH"];
+assertEq["empty ohlcv CSV returns 0"; emptyOhlcvCount; 0j];
+
+// ---------------------------------------------------------------------------
+// Test 8: readOhlcvCSV parses all column types correctly
+// ---------------------------------------------------------------------------
+
+rawOhlcv:readOhlcvCSV hsym`$testOhlcvCSV;
+assertEq["readOhlcvCSV row count";          count rawOhlcv;         3j];
+assertEq["readOhlcvCSV sym type";           type rawOhlcv`sym;      11h];
+assertEq["readOhlcvCSV time type";          type rawOhlcv`time;     12h];
+assertEq["readOhlcvCSV open type";          type rawOhlcv`open;      9h];
+assertEq["readOhlcvCSV close type";         type rawOhlcv`close;     9h];
+assertEq["readOhlcvCSV volume type";        type rawOhlcv`volume;    7h];
+assertEq["readOhlcvCSV instrument_id type"; type rawOhlcv`instrument_id; 7h];
+
+// ---------------------------------------------------------------------------
+// Test 9: loadOhlcv writes partition and returns correct row count
+// ---------------------------------------------------------------------------
+
+ohlcvCount:loadOhlcv[hsym`$testOhlcvCSV; 2024.01.16; `$"XNAS.ITCH"];
+assertEq["loadOhlcv row count";        ohlcvCount;                       3j];
+assertEq["ohlcv partition dir exists"; `2024.01.16 in key HDB_DIR;       1b];
+assertEq["ohlcv table dir exists";     `ohlcv_1m in key ` sv HDB_DIR,`2024.01.16; 1b];
+
+// ---------------------------------------------------------------------------
+// Test 10: loadOhlcv is idempotent — loading same file twice keeps row count at 3
+// ---------------------------------------------------------------------------
+
+ohlcvCount2:loadOhlcv[hsym`$testOhlcvCSV; 2024.01.16; `$"XNAS.ITCH"];
+assertEq["loadOhlcv idempotent row count"; ohlcvCount2; 3j];
+
+// ---------------------------------------------------------------------------
+// Test 11: Multi-exchange merge — XNAS.ITCH and XNYS.PILLAR in same partition date
+//
+// Tests 1-3 already loaded 3 XNAS.ITCH rows for 2024.01.15.
+// We now load 1 XNYS.PILLAR row for the same date and verify the partition
+// contains rows from both exchanges without dropping or duplicating anything.
+//
+// IMPORTANT: loadTrades must be called BEFORE any `system "l hdb"` in this
+// session.  Once an HDB is loaded, xasc routes through .Q.xasc which treats
+// any table with a `date` column as partitioned, causing 'dup date.
+// ---------------------------------------------------------------------------
+
+xnysCount:loadTrades[hsym`$xnysTradesCSV; 2024.01.15; `$"XNYS.PILLAR"];
+assertEq["XNYS.PILLAR load row count"; xnysCount; 1j];
+
+// Single HDB reload covers both Test 10 (ohlcv idempotency) and Test 11 (merge)
+system "l ",1_string HDB_DIR;
+assertEq["no duplicate ohlcv rows"; count select from ohlcv_1m where date=2024.01.16; 3j];
+
+mergedRaw:select from trades where date=2024.01.15;
+// unenumAll resolves all type-20h enumerated columns to plain symbols
+mergedTrades:unenumAll mergedRaw;
+exchangeSyms:distinct mergedTrades`exchange;
+assertEq["XNAS.ITCH in merged partition";  (`$"XNAS.ITCH")  in exchangeSyms; 1b];
+assertEq["XNYS.PILLAR in merged partition"; (`$"XNYS.PILLAR") in exchangeSyms; 1b];
+assertEq["merged partition total rows";    count mergedTrades;              4j];
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 

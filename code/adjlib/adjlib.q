@@ -83,14 +83,19 @@ getUnadjusted:{[tbl;syms;startDate;endDate]
 //   syms      - symbol or list of symbols
 //   startDate - date range start (inclusive)
 //   endDate   - date range end (inclusive)
-//   method    - `split  (split adjustment only — uses cumulative_factor)
-//               `total  (split + dividend — same field; extend here when needed)
+//   method    - `backward  prices in post-split (current) terms
+//                           adjusted = raw * cumulative_factor
+//               `forward   prices in pre-split (historical) terms
+//                           adjusted = raw * cumulative_factor / first_factor
 //
 // Returns the ohlcv_1m columns plus adj_close (the adjusted close price).
 // When ref_adj_factors has no entry for a (sym,date), adj_close equals close.
 // ---------------------------------------------------------------------------
 getAdjustedClose:{[syms;startDate;endDate;method]
     syms:$[-11h=type syms; enlist syms; syms];
+    if[not method in `backward`forward;
+        '"unsupported method: ",string method
+    ];
 
     // Raw bars from HDB (or in-memory ohlcv_1m if HDB not loaded in tests)
     bars:select from ohlcv_1m where date within (startDate;endDate), sym in syms;
@@ -104,10 +109,28 @@ getAdjustedClose:{[syms;startDate;endDate;method]
               (", " sv string syms)," — returning unadjusted prices"]
     ];
 
-    // Apply price and volume adjustments
+    // Apply backward (post-split) price and volume adjustments — common to both methods
     adjBars:applyAdj[bars;factors];
 
-    // Add adj_close: the adjusted close is already in the close column after
-    // applyAdj; we add it as a separate column so callers can compare raw vs adj
-    update adj_close:close from adjBars
+    $[method=`backward;
+        // backward: all prices in post-split (current) terms.
+        // adj_close is the backward-adjusted close (same as the `close` column).
+        update adj_close:close from adjBars;
+        // forward: all prices in pre-split (historical) terms.
+        // Divide each bar's backward-adjusted price by the first cumulative_factor
+        // for that sym within the requested date range.  This normalises all bars
+        // to the price scale that was in effect at the start of the window.
+        [firstF:select first_factor:first cumulative_factor by sym
+                 from `date xasc factors;
+         adjFwd:adjBars lj firstF;
+         adjFwd:update first_factor:1.0 from adjFwd where null first_factor;
+         adjFwd:update
+             open:   open  % first_factor,
+             high:   high  % first_factor,
+             low:    low   % first_factor,
+             close:  close % first_factor,
+             volume: `long$(volume * first_factor)
+         from adjFwd;
+         (cols[ohlcv_1m],`adj_close) # update adj_close:close from adjFwd]
+     ]
  };

@@ -108,6 +108,108 @@ found:scanManifestDir`$"/tmp/grad_test_manifests";
 assertEq["scanManifestDir finds manifest"; 1<=count found; 1b];
 
 // ---------------------------------------------------------------------------
+// Test: readManifest falls back to "dataset" key (legacy manifests)
+//
+// Pre-multi-exchange manifests used the key "dataset" where current ones use
+// "exchange".  readManifest must accept both.
+// ---------------------------------------------------------------------------
+
+legacyManifest:()!();
+legacyManifest[`request_id]       :"req_test_legacy";
+legacyManifest[`chunk_id]         :"req_test_legacy_chunk000";
+legacyManifest[`databento_job_id] :"DBNJ-LEGACY1";
+legacyManifest[`dataset]          :"XNAS.ITCH";    // old key — no `exchange` present
+legacyManifest[`schema]           :"trades";
+legacyManifest[`date]             :"2024-01-15";
+legacyManifest[`symbols]          :enlist "AAPL";
+legacyManifest[`file_path]        :"/tmp/grad_test_chunk.csv";
+legacyManifest[`row_count]        :12345;
+legacyManifest[`checksum]         :"sha256:abc123";
+legacyManifest[`min_ts]           :"";
+legacyManifest[`max_ts]           :"";
+legacyManifest[`created_at]       :"2024-01-15T10:00:00+00:00";
+
+legacyManifestPath:"/tmp/grad_test_legacy_manifest.json";
+(hsym`$legacyManifestPath) 0: enlist .j.j legacyManifest;
+
+mLegacy:readManifest`$legacyManifestPath;
+assertEq["legacy dataset key parsed as exchange"; mLegacy`exchange; `$"XNAS.ITCH"];
+
+// Manifest with neither exchange nor dataset — should default to XNAS.ITCH
+minimalManifest:()!();
+minimalManifest[`request_id]       :"req_test_minimal";
+minimalManifest[`chunk_id]         :"req_test_minimal_chunk000";
+minimalManifest[`databento_job_id] :"DBNJ-MINIMAL1";
+// intentionally no `exchange` or `dataset` key
+minimalManifest[`schema]           :"trades";
+minimalManifest[`date]             :"2024-01-15";
+minimalManifest[`symbols]          :enlist "AAPL";
+minimalManifest[`file_path]        :"/tmp/grad_test_chunk.csv";
+minimalManifest[`row_count]        :12345;
+minimalManifest[`checksum]         :"sha256:abc123";
+minimalManifest[`min_ts]           :"";
+minimalManifest[`max_ts]           :"";
+minimalManifest[`created_at]       :"2024-01-15T10:00:00+00:00";
+
+minimalManifestPath:"/tmp/grad_test_minimal_manifest.json";
+(hsym`$minimalManifestPath) 0: enlist .j.j minimalManifest;
+
+mMinimal:readManifest`$minimalManifestPath;
+assertEq["no exchange/dataset defaults to XNAS.ITCH"; mMinimal`exchange; `$"XNAS.ITCH"];
+
+// ---------------------------------------------------------------------------
+// Test: scanManifestDir on empty directory returns empty list
+// ---------------------------------------------------------------------------
+
+system "mkdir -p /tmp/grad_empty_manifests";
+emptyFound:scanManifestDir`$"/tmp/grad_empty_manifests";
+assertEq["empty dir returns 0 manifests"; count emptyFound; 0j];
+
+// ---------------------------------------------------------------------------
+// Test: showJobsTable — materialise job store as a kdb+ table
+// ---------------------------------------------------------------------------
+
+// Write a synthetic job record to a temp jobs dir
+jobsDir:"/tmp/grad_test_jobs";
+system "mkdir -p ",jobsDir;
+
+jobRecord:()!();
+jobRecord[`request_id]  :"req_show_001";
+jobRecord[`chunk_id]    :"req_show_001_chunk000";
+jobRecord[`dataset]     :"XNAS.ITCH";
+jobRecord[`schema]      :"trades";
+jobRecord[`date]        :"2024-01-15";
+jobRecord[`status]      :"verified";
+jobRecord[`retries]     :0;
+jobRecord[`row_count]   :5000;
+jobRecord[`error_msg]   :"";
+jobRecord[`failure_type]:"";
+jobRecord[`created_at]  :"2024-01-15T10:00:00+00:00";
+jobRecord[`updated_at]  :"2024-01-15T10:05:00+00:00";
+
+(hsym`$jobsDir,"/req_show_001_chunk000.json") 0: enlist .j.j jobRecord;
+
+jt:showJobsTable`$jobsDir;
+
+assertEq["showJobsTable returns table";     type jt; 98h];
+assertEq["showJobsTable has 1 row";         count jt; 1j];
+assertEq["showJobsTable request_id";        jt[0;`request_id]; `req_show_001];
+assertEq["showJobsTable chunk_id";          jt[0;`chunk_id];   `req_show_001_chunk000];
+assertEq["showJobsTable status";            jt[0;`status];     `verified];
+assertEq["showJobsTable row_count";         jt[0;`row_count];  5000j];
+assertEq["showJobsTable date";              jt[0;`date];       2024.01.15];
+
+// Empty dir returns empty typed table
+system "mkdir -p /tmp/grad_empty_jobs";
+jtEmpty:showJobsTable`$"/tmp/grad_empty_jobs";
+assertEq["showJobsTable empty dir is table";  type jtEmpty; 98h];
+assertEq["showJobsTable empty dir has 0 rows"; count jtEmpty; 0j];
+
+// Non-existent dir returns empty typed table
+jtMissing:showJobsTable`$"/tmp/grad_nonexistent_jobs_xyz";
+assertEq["showJobsTable missing dir is table"; type jtMissing; 98h];
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 

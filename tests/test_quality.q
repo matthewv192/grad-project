@@ -60,7 +60,7 @@ multiExchangeTrades:([]
     date:2#2024.01.15;
     sym:`AAPL`AAPL;
     time:2#2024.01.15D09:30:00.000000000;
-    exchange:`$"XNAS.ITCH"`$"XNYS.PILLAR";  // different exchanges → not dups
+    exchange:(`$"XNAS.ITCH";`$"XNYS.PILLAR");  // different exchanges → not dups
     instrument_id:2#1001j;
     price:185.5 185.5f;
     size:100 100j;
@@ -152,6 +152,42 @@ assertGt["null table: failed>0"; r3`failed; 0j];
 emptyT:0#cleanTrades;
 r4:runQualityChecks[emptyT;`trades;2024.01.15];
 assertEq["empty table: status=skipped"; r4`passed; `skipped];
+
+// ---------------------------------------------------------------------------
+// Test 11: runQualityChecks on a clean ohlcv_1m table — all pass
+//
+// ohlcv_1m uses different key columns (sym time open high low close) from
+// trades (sym time price size).  This test confirms the tableName dispatch
+// in runQualityChecks selects the right columns for null checking.
+// ---------------------------------------------------------------------------
+
+cleanOhlcv:([]
+    date:    4#2024.01.15;
+    sym:     `AAPL`AAPL`MSFT`MSFT;
+    time:    2024.01.15D09:30:00.000000000 2024.01.15D09:31:00.000000000
+             2024.01.15D09:30:00.000000000 2024.01.15D09:31:00.000000000;
+    exchange:4#`$"XNAS.ITCH";
+    instrument_id:1001 1001 1002 1002j;
+    open:    100.0 101.0 200.0 201.0f;
+    high:    102.0 103.0 202.0 203.0f;
+    low:     99.0  100.0 199.0 200.0f;
+    close:   101.0 102.0 201.0 202.0f;
+    volume:  1000 1100 2000 2100j
+ );
+
+r5:runQualityChecks[cleanOhlcv;`ohlcv_1m;2024.01.15];
+assertEq["ohlcv clean: passed=3";  r5`passed; 3j];
+assertEq["ohlcv clean: failed=0";  r5`failed; 0j];
+assertEq["ohlcv clean: dups=0";    r5`dups;   0j];
+
+// ---------------------------------------------------------------------------
+// Test 12: runQualityChecks on ohlcv_1m table with null close — nulls check fails
+// ---------------------------------------------------------------------------
+
+nullOhlcv:update close:0nf from cleanOhlcv where sym=`AAPL,volume=1000j;
+r6:runQualityChecks[nullOhlcv;`ohlcv_1m;2024.01.15];
+assertGt["ohlcv null close: total_nulls>0"; r6`total_nulls; 0j];
+assertGt["ohlcv null close: failed>0";      r6`failed;      0j];
 
 // ---------------------------------------------------------------------------
 // Report
