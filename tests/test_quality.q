@@ -40,17 +40,33 @@ cleanTrades:([]
     sequence:1 2 3 4j
  );
 
-// Table with duplicate (sym, time) pair
+// Table with duplicate natural keys — same sym, time, exchange, AND sequence.
+// These represent the same tick loaded twice (e.g. a re-run without idempotency).
 dupTrades:([]
     date:3#2024.01.15;
     sym:`AAPL`AAPL`AAPL;
-    time:3#2024.01.15D09:30:00.000000000;   // all three are the same time
+    time:3#2024.01.15D09:30:00.000000000;
+    exchange:3#`$"XNAS.ITCH";
     instrument_id:3#1001j;
     price:185.5 185.5 185.5f;
     size:100 100 100j;
     side:3#`A;
     conditions:3#`128;
-    sequence:1 2 3j
+    sequence:3#42j                          // same sequence → genuine duplicates
+ );
+
+// Table with same (sym, time) but DIFFERENT exchanges — not a duplicate
+multiExchangeTrades:([]
+    date:2#2024.01.15;
+    sym:`AAPL`AAPL;
+    time:2#2024.01.15D09:30:00.000000000;
+    exchange:`$"XNAS.ITCH"`$"XNYS.PILLAR";  // different exchanges → not dups
+    instrument_id:2#1001j;
+    price:185.5 185.5f;
+    size:100 100j;
+    side:`A`A;
+    conditions:2#`128;
+    sequence:1 2j
  );
 
 // Out-of-order table (MSFT before AAPL but AAPL < MSFT alphabetically)
@@ -76,9 +92,15 @@ nullTrades:update price:0nf from cleanTrades where sym=`AAPL,size=100j;
 assertEq["no duplicates in clean"; checkDuplicateKeys[cleanTrades]; 0j];
 
 // ---------------------------------------------------------------------------
-// Test 2: checkDuplicateKeys on dup table → 2 (3 rows, 1 distinct pair → 2 dups)
+// Test 2: checkDuplicateKeys on dup table → 2 (3 rows, 1 distinct key → 2 dups)
 // ---------------------------------------------------------------------------
 assertEq["dups detected"; checkDuplicateKeys[dupTrades]; 2j];
+
+// ---------------------------------------------------------------------------
+// Test 2b: checkDuplicateKeys on multi-exchange table → 0
+// Same (sym, time) from different exchanges must NOT be counted as duplicates.
+// ---------------------------------------------------------------------------
+assertEq["multi-exchange no false-positive dups"; checkDuplicateKeys[multiExchangeTrades]; 0j];
 
 // ---------------------------------------------------------------------------
 // Test 3: checkTimeOrdering on sorted table → 0

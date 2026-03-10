@@ -138,6 +138,13 @@ processManifests:{[stagingPath]
         status:readJobStatus[jobsDir; m`chunk_id];
         if[status=`verified;
             .lg.o[`manifest;"skipping verified chunk: ",string m`chunk_id];
+            // Archive to keep the active manifest dir lean.
+            // Verified manifests accumulate over many runs and are scanned
+            // (and skipped) on every invocation — archiving them to a
+            // subdirectory removes them from the hot path entirely.
+            archDir:ssr[1_string jobsDir;"jobs";"manifests/archive"];
+            @[system;"mkdir -p ",archDir;::];
+            @[system;"mv ",1_string[mPath]," ",archDir,"/";::];
             :0j
         ];
         if[status=`loading;

@@ -1,7 +1,9 @@
 // quality.q — data quality checks run after each partition load.
 //
 // Functions:
-//   checkDuplicateKeys[t]       — count (sym,time) duplicate rows
+//   checkDuplicateKeys[t]       — count rows with duplicate natural keys
+//                                 (sym,time,exchange,sequence for trades;
+//                                  sym,time,exchange for ohlcv_1m)
 //   checkTimeOrdering[t]        — 0j if sorted by sym,time; else count t
 //   checkNulls[t;keyCols]       — dict: column → null count
 //   runQualityChecks[t;tn;dt]   — run all checks; return result dict
@@ -11,7 +13,7 @@
 // check_quality.sh calls: checkQualityScript[] (reads QUALITY_TABLE/QUALITY_DATE env)
 //
 // Result dict keys:
-//   dups            — count of duplicate (sym,time) rows
+//   dups            — count of rows with duplicate natural keys
 //   ordering_errors — 0j if sorted; count t if not
 //   nulls           — dict col→null count for key columns
 //   total_nulls     — sum of nulls dict
@@ -27,17 +29,33 @@ if[not `lg in key `.;
  ];
 
 // ---------------------------------------------------------------------------
-// checkDuplicateKeys — count rows with duplicate (sym, time) pairs
+// checkDuplicateKeys — count rows with duplicate natural keys.
+//
+// Key columns used (intersected with actual table columns so the function
+// works on both trades and ohlcv_1m):
+//   sym      — ticker
+//   time     — nanosecond event timestamp
+//   exchange — exchange source (multi-exchange partitions have same sym+time
+//              from different exchanges — not a duplicate)
+//   sequence — exchange sequence number; tick data legitimately has multiple
+//              trades at the same nanosecond for the same sym+exchange, so
+//              sequence is required to distinguish them.  ohlcv_1m has no
+//              sequence column so falls back to sym+time+exchange (one bar
+//              per sym per minute per exchange is the correct invariant).
 // ---------------------------------------------------------------------------
 checkDuplicateKeys:{[t]
-    `long$count[t] - count distinct `sym`time#t
+    keyCols:`sym`time`exchange`sequence inter cols t;
+    `long$count[t] - count distinct keyCols#t
  };
 
 // ---------------------------------------------------------------------------
-// checkTimeOrdering — 0j if perfectly sorted by sym,time; else count t
+// checkTimeOrdering — 0j if perfectly sorted by sym,time; else count t.
+// Sorts only the two key columns rather than the full table, avoiding the
+// cost of materialising a complete sorted copy for wide tables.
 // ---------------------------------------------------------------------------
 checkTimeOrdering:{[t]
-    $[t~`sym`time xasc t; 0j; `long$count t]
+    keyCols:`sym`time#t;
+    $[keyCols~`sym`time xasc keyCols; 0j; `long$count t]
  };
 
 // ---------------------------------------------------------------------------

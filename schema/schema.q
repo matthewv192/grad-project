@@ -69,6 +69,7 @@ backfill_jobs:([]
     retries:`int$();
     error_msg:();                 // generic list — string or null
     file_path:`symbol$();
+    file_paths:();                // generic list — all CSV paths for multi-file jobs
     checksum:`symbol$();
     row_count:`long$();
     min_ts:`timestamp$();

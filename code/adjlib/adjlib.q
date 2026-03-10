@@ -99,6 +99,11 @@ getAdjustedClose:{[syms;startDate;endDate;method]
     factors:select sym,date,cumulative_factor from ref_adj_factors
         where sym in syms, date within (startDate;endDate);
 
+    if[0=count factors;
+        .lg.o[`adjlib;"no adjustment factors found for ",
+              (", " sv string syms)," — returning unadjusted prices"]
+    ];
+
     // Apply price and volume adjustments
     adjBars:applyAdj[bars;factors];
 

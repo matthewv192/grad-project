@@ -1,20 +1,30 @@
 """
 orchestrator.py — Databento batch backfill orchestrator.
 
-Milestone 2 additions over M1:
+Responsibilities (Python side of the Python↔q split):
   - Chunking: one Databento job per (day × symbol-batch). Each chunk is
     independent so a single failure doesn't block everything else.
   - Job store: every state transition is written to
     staging/metadata/jobs/<chunk_id>.json so a crashed run can resume.
   - Idempotency: before submitting a chunk we check its stored status and
     skip (or fast-forward) accordingly.
-  - Retry: --retry-failed re-queues all failed chunks with retries < MAX_RETRIES,
-    using exponential backoff (2^retries seconds).
-  - Status: --status prints a human-readable summary of all job records.
+  - Retry: --retry-failed re-queues failed chunks with exponential backoff
+    (min(2^retries, 60) seconds), capped at 60s.
+  - Multi-CSV: when a Databento job delivers multiple CSV files, each gets
+    its own manifest (chunk IDs suffixed _part2, _part3, …). All paths are
+    stored in the job record so a resumed run re-writes all manifests.
+  - Cost safeguard: BACKFILL_MAX_COST_USD (default $50) blocks over-budget
+    requests before submission. Unexpected estimation failures abort the run
+    rather than silently disabling the guard.
+  - TZ=UTC: the q subprocess always runs with TZ=UTC set.
+  - Metrics: a stub metrics JSON is written at chunk start so a crash never
+    leaves a gap; q updates it with load timing after the partition write.
+  - Duplicate request-id detection: explicit --request-id values are checked
+    against existing job records; a collision with different parameters aborts.
 
-Python <-> q boundary (unchanged from M1):
-  Python owns: API calls, downloads, DBN→CSV, manifests, job store.
-  q owns:      kdb+ writes, HDB partition management.
+Python <-> q boundary:
+  Python owns: API calls, downloads, manifests, job store, metrics stub.
+  q owns:      CSV parsing, kdb+ writes, HDB partition management, quality checks.
   They communicate via CSV + JSON files in staging/.
 """
 
@@ -29,6 +39,7 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -109,7 +120,8 @@ class JobRecord:
     status: str = "pending"
     retries: int = 0
     error_msg: str = ""
-    file_path: str = ""
+    file_path: str = ""        # primary CSV (used for checksum / row_count)
+    file_paths: list = field(default_factory=list)  # all CSVs from this job
     checksum: str = ""
     row_count: int = 0
     created_at: str = ""
@@ -222,9 +234,15 @@ def estimate_cost(client: db.Historical, dataset: str, symbols: list[str],
             dataset=dataset, symbols=symbols, schema=schema,
             start=start, end=end, stype_in="raw_symbol",
         ))
-    except Exception as exc:
-        log.warning(_j(f"Cost estimation failed (will proceed): {exc}"))
+    except db.BentoError as exc:
+        # Databento API errors (e.g. unknown dataset, bad symbol) — log and
+        # disable the safeguard so the caller can decide whether to proceed.
+        log.warning(_j(f"Cost estimation API error (safeguard disabled): {exc}"))
         return 0.0
+    except Exception as exc:
+        # Unexpected errors (network timeout, SDK bug, etc.) — re-raise so
+        # the caller is not silently left without a cost guard.
+        raise RuntimeError(f"Cost estimation failed unexpectedly: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +275,22 @@ def poll_until_done(client: db.Historical, job_id: str) -> dict:
         # cannot cause us to loop past the timeout indefinitely.
         if time.monotonic() > deadline:
             raise RuntimeError(f"Timed out waiting for job {job_id}")
-        jobs = client.batch.list_jobs(states=["queued", "processing", "done"])
+        # The Databento SDK's JobState enum only recognises 'queued',
+        # 'processing', 'done', 'expired' — passing 'failed' causes a
+        # validation error when the SDK parses the response.  Instead we
+        # catch the SDK's validation exception here: if it fires it means
+        # the API returned a job in an unexpected state (almost certainly
+        # 'failed'), which we surface as a clear runtime error.
+        try:
+            jobs = client.batch.list_jobs(
+                states=["queued", "processing", "done"]
+            )
+        except Exception as sdk_exc:
+            if "failed" in str(sdk_exc).lower() or "jobstate" in str(sdk_exc).lower():
+                raise RuntimeError(
+                    f"Job {job_id} failed at Databento: {sdk_exc}"
+                ) from sdk_exc
+            raise
         match = next((j for j in jobs if j["id"] == job_id), None)
         if match is None:
             expired = client.batch.list_jobs(states=["expired"])
@@ -283,21 +316,32 @@ def sha256_of_file(path: Path) -> str:
 
 
 def count_csv_rows(path: Path) -> int:
-    with open(path) as f:
-        return sum(1 for _ in f) - 1  # exclude header
+    """Count data rows in a CSV file (excluding the header).
+
+    Uses wc -l which reads only newline bytes, avoiding a full Python-level
+    line-by-line scan that would re-read the entire file after download.
+    """
+    result = subprocess.run(["wc", "-l", str(path)],
+                            capture_output=True, text=True, check=True)
+    return int(result.stdout.split()[0]) - 1  # subtract header line
 
 
 def infer_date_from_filename(name: str) -> str:
     """Extract YYYY-MM-DD from a Databento CSV filename.
 
-    Handles both formats:
-      - xnas-itch-20240603.trades.csv  (actual Databento delivery format)
-      - DBNJ-XXXXX_20240603_trades.csv (legacy/documented format)
+    Anchored to the known Databento delivery formats to avoid matching
+    hashes or other digit runs that appear before the date:
+      - xnas-itch-20240603.trades.csv
+      - equs-mini-20240117.ohlcv-1m.csv
+      - DBNJ-XXXXX_20240603_trades.csv  (legacy)
     """
-    m = re.search(r"(\d{4})(\d{2})(\d{2})", name)
+    m = re.search(r"[-_](\d{4})(\d{2})(\d{2})[._]", name)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    return ""
+    raise ValueError(
+        f"Cannot infer date from filename {name!r}: "
+        "expected a name containing YYYY-MM-DD or YYYYMMDD preceded by '-' or '_'"
+    )
 
 
 def download_csv(client: db.Historical, job_id: str,
@@ -383,7 +427,8 @@ def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
     env = {**os.environ,
            "STAGING_DIR": str(manifest_dir.parent.parent),
            "KDBHDB": hdb_dir,
-           "TORQHOME": torq_home}
+           "TORQHOME": torq_home,
+           "TZ": "UTC"}
 
     log.info(_j(f"Invoking q loader: cwd={package_home}"))
     result = subprocess.run(
@@ -402,6 +447,30 @@ def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
 # ---------------------------------------------------------------------------
 # Per-chunk pipeline
 # ---------------------------------------------------------------------------
+
+def _write_manifests_for_record(chunk: Chunk, record: "JobRecord",
+                                 manifest_dir: Path) -> None:
+    """Write manifests for all CSVs stored in a job record.
+
+    Used on resume: `record.file_paths` holds every path from the original
+    download (populated since the multi-CSV fix). Older records that only
+    have `record.file_path` fall back to writing a single manifest so
+    backward compatibility with pre-existing job store entries is preserved.
+    """
+    all_paths = record.file_paths or ([record.file_path] if record.file_path else [])
+    for part_idx, raw_path in enumerate(all_paths):
+        part_path = Path(raw_path)
+        if not part_path.exists():
+            log.warning(_j(f"Chunk {chunk.chunk_id}: CSV not found on resume, "
+                           f"skipping manifest for {part_path.name}"))
+            continue
+        part_chunk_id = (chunk.chunk_id if part_idx == 0
+                         else f"{chunk.chunk_id}_part{part_idx + 1}")
+        write_manifest(chunk.request_id, part_chunk_id,
+                       record.databento_job_id, chunk.schema,
+                       chunk.symbols, part_path, manifest_dir,
+                       dataset=chunk.dataset)
+
 
 def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
               staging_dir: Path, manifest_dir: Path,
@@ -428,17 +497,23 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         symbols=chunk.symbols,
     )
     metrics.mark("total_start")
+    # Write an in-progress stub immediately so a crash leaves a partial record
+    # rather than a gap in the metrics directory for this chunk.
+    metrics.save(staging_dir)
 
     # ---- Already done? ----
     if record and record.status in SKIP_STATUSES:
         log.info(_j(f"Chunk {chunk.chunk_id} already {record.status}, skipping"))
         return True
 
-    # ---- Resume from downloaded? ----
-    if record and record.status == "downloaded" and record.file_path:
+    # ---- Resume from downloaded, or failed-after-download? ----
+    # If a previous run completed the download but then crashed during
+    # write_manifest (setting status to "failed"), we can skip the re-download
+    # as long as the primary CSV still exists with a matching checksum.
+    if record and record.status in ("downloaded", "failed") and record.file_path:
         csv_path = Path(record.file_path)
         if csv_path.exists():
-            # Feature 5: verify stored checksum matches file on disk.
+            # Verify stored checksum matches the primary file on disk.
             # Catches corruption or partial downloads from a previous run.
             if record.checksum:
                 actual_checksum = sha256_of_file(csv_path)
@@ -450,25 +525,21 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
                     ))
                     record.status = "pending"
                     record.checksum = ""
+                    record.file_paths = []
                     job_store.save(record)
                     # Fall through to re-submit below
                 else:
                     log.info(_j(f"Chunk {chunk.chunk_id}: checksum OK, "
                                 f"skipping download"))
-                    write_manifest(chunk.request_id, chunk.chunk_id,
-                                   record.databento_job_id, chunk.schema,
-                                   chunk.symbols, csv_path, manifest_dir,
-                                   dataset=chunk.dataset)
+                    _write_manifests_for_record(
+                        chunk, record, manifest_dir)
                     record.status = "loaded"
                     job_store.save(record)
                     return True
             else:
                 log.info(_j(f"Chunk {chunk.chunk_id} already downloaded "
                              f"(no stored checksum), skipping to manifest"))
-                write_manifest(chunk.request_id, chunk.chunk_id,
-                               record.databento_job_id, chunk.schema,
-                               chunk.symbols, csv_path, manifest_dir,
-                               dataset=chunk.dataset)
+                _write_manifests_for_record(chunk, record, manifest_dir)
                 record.status = "loaded"
                 job_store.save(record)
                 return True
@@ -528,9 +599,16 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         if not csv_paths:
             raise RuntimeError("No CSV files produced after download")
 
-        # One Databento job per day → typically one CSV; take the first
+        if len(csv_paths) > 1:
+            log.warning(_j(
+                f"Job {job_id} delivered {len(csv_paths)} CSVs; "
+                "writing one manifest per file"
+            ))
+
+        # Use primary CSV for job-store record (first file)
         csv_path = csv_paths[0]
         record.file_path = str(csv_path.resolve())
+        record.file_paths = [str(p.resolve()) for p in csv_paths]
         record.checksum = sha256_of_file(csv_path)
         record.row_count = count_csv_rows(csv_path)
         record.status = "downloaded"
@@ -539,10 +617,13 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         metrics.row_count = record.row_count
         metrics.file_bytes = csv_path.stat().st_size
 
-        # ---- Write manifest ----
-        write_manifest(chunk.request_id, chunk.chunk_id, job_id,
-                       chunk.schema, chunk.symbols, csv_path, manifest_dir,
-                       dataset=chunk.dataset)
+        # ---- Write manifest (one per CSV) ----
+        for part_idx, part_path in enumerate(csv_paths):
+            part_chunk_id = (chunk.chunk_id if part_idx == 0
+                             else f"{chunk.chunk_id}_part{part_idx + 1}")
+            write_manifest(chunk.request_id, part_chunk_id, job_id,
+                           chunk.schema, chunk.symbols, part_path, manifest_dir,
+                           dataset=chunk.dataset)
 
         record.status = "loaded"
         job_store.save(record)
@@ -560,6 +641,52 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         metrics.save(staging_dir)
         log.error(_j(f"Chunk {chunk.chunk_id} failed (attempt {record.retries}): {exc}"))
         return False
+
+
+# ---------------------------------------------------------------------------
+# Parallel chunk runner
+# ---------------------------------------------------------------------------
+
+def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
+                         job_store: JobStore, staging_dir: Path,
+                         manifest_dir: Path, skip_load: bool,
+                         max_workers: int,
+                         backoffs: dict | None = None) -> tuple[int, int]:
+    """
+    Run chunks concurrently using a thread pool. Returns (succeeded, failed).
+
+    backoffs: optional dict mapping chunk_id → seconds to sleep before starting.
+              Used by --retry-failed to honour per-chunk exponential backoff without
+              serialising the whole retry queue.
+
+    Thread safety: each chunk writes to its own files (job store, manifest,
+    metrics, staging dir) so no shared mutable state requires locking here.
+    The q loader is invoked once by the caller after all futures complete.
+    """
+    def _work(chunk: Chunk) -> bool:
+        wait = (backoffs or {}).get(chunk.chunk_id, 0)
+        if wait:
+            log.info(_j(f"Chunk {chunk.chunk_id}: waiting {wait}s before retry"))
+            time.sleep(wait)
+        return run_chunk(client, chunk, job_store, staging_dir, manifest_dir,
+                         skip_load=skip_load)
+
+    succeeded = 0
+    failed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_work, chunk): chunk for chunk in chunks}
+        for future in as_completed(futures):
+            chunk = futures[future]
+            try:
+                ok = future.result()
+            except Exception as exc:
+                log.error(_j(f"Chunk {chunk.chunk_id} raised unexpected exception: {exc}"))
+                ok = False
+            if ok:
+                succeeded += 1
+            else:
+                failed += 1
+    return succeeded, failed
 
 
 # ---------------------------------------------------------------------------
@@ -638,15 +765,14 @@ def parse_args(argv=None):
                         help="Print job status summary and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print chunk plan and cost estimate; don't submit")
-    parser.add_argument("--skip-load", action="store_true",
-                        help="Skip invoking the q loader after download")
     parser.add_argument("--download-only", action="store_true",
-                        help="Download and stage data only; do not invoke q loader "
-                             "(equivalent to --skip-load)")
+                        help="Download and stage data only; do not invoke the q loader")
     parser.add_argument("--load-only", action="store_true",
                         help="Skip API calls; run q loader on existing manifests only")
     parser.add_argument("--metrics", action="store_true",
                         help="Print per-chunk timing metrics and exit")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Maximum parallel chunk workers (default: 4)")
     return parser.parse_args(argv)
 
 
@@ -657,8 +783,7 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
 
-    # Normalise: --download-only implies --skip-load
-    skip_load = args.skip_load or args.download_only
+    skip_load = args.download_only
 
     # ---- Status mode: no API key needed ----
     if args.status:
@@ -698,13 +823,10 @@ def main(argv=None):
             return
         log.info(_j(f"Retrying {len(failed)} failed chunk(s)"))
 
+        retry_chunks = []
+        backoffs = {}
         for record in failed:
-            # Exponential backoff before resubmitting
-            wait = 2 ** record.retries
-            log.info(_j(f"Waiting {wait}s before retrying {record.chunk_id}"))
-            time.sleep(wait)
-
-            # Reconstruct chunk from stored record
+            wait = min(2 ** record.retries, 60)
             chunk = Chunk(
                 request_id=record.request_id,
                 chunk_id=record.chunk_id,
@@ -713,13 +835,15 @@ def main(argv=None):
                 symbols=record.symbols,
                 date=date.fromisoformat(record.date),
             )
-            # Reset status so run_chunk will resubmit
             record.status = "pending"
             record.error_msg = ""
             job_store.save(record)
+            retry_chunks.append(chunk)
+            backoffs[chunk.chunk_id] = wait
 
-            run_chunk(client, chunk, job_store, STAGING_DIR, manifest_dir,
-                      skip_load=skip_load)
+        _run_chunks_parallel(client, retry_chunks, job_store, STAGING_DIR,
+                             manifest_dir, skip_load=skip_load,
+                             max_workers=args.workers, backoffs=backoffs)
 
         if not skip_load:
             try:
@@ -742,6 +866,31 @@ def main(argv=None):
     request_id = (args.request_id
                   or f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
                      f"_{uuid.uuid4().hex[:6]}")
+
+    # Detect a --request-id that collides with an existing run (different
+    # symbols/date range → silent corruption; same range → idempotent is fine).
+    if args.request_id:
+        existing = [r for r in job_store.load_all()
+                    if r.request_id == request_id]
+        if existing:
+            existing_dates = sorted({r.date for r in existing})
+            existing_syms  = sorted({s for r in existing for s in r.symbols})
+            new_dates = sorted({(start + timedelta(days=i)).isoformat()
+                                for i in range((end - start).days + 1)})
+            new_syms = sorted(symbols)
+            if existing_dates != new_dates or existing_syms != new_syms:
+                log.error(_j(
+                    f"request_id={request_id!r} already exists in the job store "
+                    f"with different parameters. "
+                    f"Existing: dates={existing_dates} syms={existing_syms}. "
+                    f"Requested: dates={new_dates} syms={new_syms}. "
+                    "Use a different --request-id or omit it to auto-generate one."
+                ))
+                sys.exit(1)
+            log.warning(_j(
+                f"request_id={request_id!r} already exists with matching "
+                "parameters — treating as idempotent resume"
+            ))
 
     chunks = generate_chunks(request_id, symbols, start, end,
                              args.chunk_size, args.schema, args.dataset)
@@ -766,16 +915,12 @@ def main(argv=None):
         print(f"  Limit:  ${MAX_COST_USD:.2f}\n")
         return
 
-    # ---- Run all chunks ----
-    succeeded = 0
-    failed = 0
-    for chunk in chunks:
-        ok = run_chunk(client, chunk, job_store, STAGING_DIR, manifest_dir,
-                       skip_load=skip_load)
-        if ok:
-            succeeded += 1
-        else:
-            failed += 1
+    # ---- Run all chunks (parallel) ----
+    log.info(_j(f"Running {len(chunks)} chunk(s) with up to {args.workers} worker(s)"))
+    succeeded, failed = _run_chunks_parallel(
+        client, chunks, job_store, STAGING_DIR, manifest_dir,
+        skip_load=skip_load, max_workers=args.workers,
+    )
 
     log.info(_j(f"Chunks complete: {succeeded} succeeded, {failed} failed"))
 

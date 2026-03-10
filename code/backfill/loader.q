@@ -10,8 +10,8 @@
 // Each partition is sorted by `sym`time before writing.
 // .Q.chk is called after each load to fill missing tables across all dates.
 //
-// Run standalone:
-//   q code/backfill/loader.q -e "runLoader[];exit 0"
+// Run standalone (invoked via stdin piping from orchestrator.py):
+//   echo "runLoader[];exit 0" | q code/backfill/loader.q
 
 // Bootstrap TorQ logging if available, otherwise define a plain fallback.
 // This lets loader.q work both inside a TorQ process and as a standalone script.
@@ -61,7 +61,15 @@ releaseWriteLock:{[lockDir]
 // data must be unenumerated before concatenation, otherwise kdb+ signals 'mismatch
 // or 'type on the concatenation step.
 // ---------------------------------------------------------------------------
-unenumAll:{[t] t {[t;c]@[t;c;{`$string x}]}/ exec c from meta t where t=20h};
+// unenumAll — unenumerate all type-20h columns.
+// q lambdas do NOT close over outer-function parameters, so we cannot use a
+// nested {type t[x]} lambda here — it would look for `t` globally and signal 'trror.
+// Instead, extract column types directly: `type each value flip tbl` gives the
+// numeric type of each column in the same order as `cols tbl`, with no nested lambda.
+unenumAll:{[tbl]
+    enumCols:(cols tbl) where 20h = type each value flip tbl;
+    tbl {[t;c]@[t;c;{`$string x}]}/ enumCols
+ };
 
 // ---------------------------------------------------------------------------
 // Column maps: Databento CSV header name → our schema column name
@@ -111,6 +119,15 @@ readTradesCSV:{[csvPath]
     raw:TRADES_COL_MAP xcol raw;
 
     // Keep only columns present in our schema (drops action, depth, etc.)
+    // Warn if any CSV-sourced schema column is absent — possible schema drift.
+    // Exclude `date and `exchange: those are added by loadTrades after this
+    // function returns and will never be present in the raw Databento CSV.
+    csvSchemaCols:cols[trades] except `date`exchange;
+    missingCols:csvSchemaCols where not csvSchemaCols in cols raw;
+    if[count missingCols;
+        .lg.e[`readTradesCSV;
+            "CSV missing schema columns: ",", " sv string missingCols]
+    ];
     raw:(cols[trades] inter cols raw)#raw;
 
     // Enforce exact types. conditions comes in as int (flags bitmask); convert
@@ -148,6 +165,13 @@ readOhlcvCSV:{[csvPath]
     // 10-char type string
     raw:("P  JFFFFJS";enlist csv) 0: csvPath;
     raw:OHLCV_COL_MAP xcol raw;
+    // `date and `exchange are added by loadOhlcv after this function returns.
+    csvSchemaCols:cols[ohlcv_1m] except `date`exchange;
+    missingCols:csvSchemaCols where not csvSchemaCols in cols raw;
+    if[count missingCols;
+        .lg.e[`readOhlcvCSV;
+            "CSV missing schema columns: ",", " sv string missingCols]
+    ];
     raw:(cols[ohlcv_1m] inter cols raw)#raw;
     raw:update
         sym:          `symbol$sym,
@@ -219,9 +243,13 @@ loadTrades:{[csvPath;partDate;dataset]
     // Unenumerate ALL type-20h columns (sym, exchange, side, conditions, …) before
     // concatenation — .Q.dpft enumerates every symbol column; plain comparison or
     // concatenation against a fresh load will signal 'mismatch if any are left enumerated.
+    // Note: `get` on a splayed table within a partitioned HDB suppresses the `date`
+    // column (it is the partition key, stored in the dir name), so we restore it
+    // explicitly before schema-selecting so the column sets of existing and raw match.
     merged:raw;
     if[`trades in key partDateDir;
         existing:unenumAll get ` sv partDateDir,`trades;
+        existing:update date:partDate from existing;
         // schema-select: handle old partitions that may be missing the exchange column
         existing:(cols[trades] inter cols existing)#existing;
         merged:`sym`time xasc existing,raw
@@ -280,11 +308,13 @@ loadOhlcv:{[csvPath;partDate;dataset]
     ];
 
     // If rows from other exchanges exist in this partition, merge them in.
-    // Unenumerate sym (type 20h → 11h) via string→symbol so .Q.dpft can re-enumerate.
+    // Unenumerate ALL type-20h columns before concatenation (see unenumAll).
+    // Note: `get` on a splayed table within a partitioned HDB suppresses the `date`
+    // column, so we restore it explicitly before schema-selecting.
     merged:raw;
     if[`ohlcv_1m in key partDateDir;
-        existing:get ` sv partDateDir,`ohlcv_1m;
-        existing:@[existing;`sym;{`$string x}];
+        existing:unenumAll get ` sv partDateDir,`ohlcv_1m;
+        existing:update date:partDate from existing;
         existing:(cols[ohlcv_1m] inter cols existing)#existing;
         merged:`sym`time xasc existing,raw
     ];
@@ -330,41 +360,44 @@ updateJobRecord:{[chunkId;newStatus;errMsg]
  };
 
 // ---------------------------------------------------------------------------
-// updateSymbologyMap — extract distinct (sym, instrument_id) pairs from the
-// loaded table and upsert into staging/reference/symbology_map.csv.
-// Accumulates across all loads; never removes existing entries.
+// Symbology accumulator — collects (sym, instrument_id) pairs in memory
+// during a loader run.  Written to disk once by flushSymbologyMap at the
+// end of runLoader, avoiding N CSV read/write cycles for N-chunk backfills.
 // ---------------------------------------------------------------------------
+.loader.symPending:([] sym:`symbol$(); instrument_id:`long$(); exchange:`symbol$();
+    valid_from:`date$(); valid_to:`date$());
+
+// updateSymbologyMap — extract new (sym, instrument_id) pairs and stage them
+// in the in-memory accumulator.  Does NOT write to disk.
 updateSymbologyMap:{[raw;partDate;dataset]
-    // Use getenv directly: in kdb+5, setenv does not update .z.e
+    newRows:update exchange:dataset, valid_from:partDate, valid_to:9999.12.31
+             from 0!(select by sym, instrument_id from raw);
+    newRows:`sym`instrument_id`exchange`valid_from`valid_to#newRows;
+    `.loader.symPending upsert newRows;
+ };
+
+// flushSymbologyMap — merge the in-memory accumulator with the on-disk CSV
+// and write once.  Called by runLoader after all chunks are processed.
+flushSymbologyMap:{[]
+    if[0=count .loader.symPending; :(::)];
     stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
     refDirStr:stagingStr,"/reference";
     refDir:hsym`$refDirStr;
     @[system;"mkdir -p ",refDirStr;::];
     mapPath:` sv refDir,`symbology_map.csv;
-
-    // Extract distinct (sym, instrument_id) pairs from this partition
-    newRows:update exchange:dataset, valid_from:partDate, valid_to:9999.12.31
-             from 0!(select by sym, instrument_id from raw);
-    newRows:`sym`instrument_id`exchange`valid_from`valid_to#newRows;
-
-    // Load existing map or start with empty schema-compatible table
     existing:$[mapPath in key mapPath;
         ("SJSDD";enlist csv) 0: mapPath;
         ([] sym:`symbol$(); instrument_id:`long$(); exchange:`symbol$();
             valid_from:`date$(); valid_to:`date$())
     ];
-
-    // Merge: group by (sym,instrument_id), keeping first valid_from (oldest seen)
-    merged:existing,newRows;
+    merged:existing,.loader.symPending;
     combined:0!(select first exchange, first valid_from, last valid_to
                 by sym, instrument_id from merged);
-
-    // Write whenever anything changed: new rows OR updated valid_to on existing rows.
-    // Sort both sides by key before comparing so row order differences don't matter.
     if[not (`sym`instrument_id xasc combined)~`sym`instrument_id xasc existing;
         mapPath 0: csv 0: combined;
         .lg.o[`loader;"symbology_map updated: total=",string[count combined]," sym-id pairs"]
-    ]
+    ];
+    `.loader.symPending set 0#.loader.symPending
  };
 
 // ---------------------------------------------------------------------------
@@ -382,7 +415,12 @@ updateMetrics:{[chunkId;requestId;loadNs;rowCount]
     raw[`load_s]:load_s;
     raw[`row_count]:rowCount;
     raw[`updated_at]:string .z.p;
-    p 0: enlist .j.j raw
+    // Write atomically via tmp file then shell rename — same pattern as
+    // updateJobRecord — prevents a q crash mid-write from corrupting the file.
+    tmp:` sv metricsDir,`$(string[chunkId],".tmp");
+    tmp 0: enlist .j.j raw;
+    mvErr:@[system;"mv ",1_string[tmp]," ",1_string p;{[e]e}];
+    if[count mvErr; @[hdel;tmp;::]; '"updateMetrics: rename failed: ",mvErr]
  };
 
 // ---------------------------------------------------------------------------
@@ -409,9 +447,12 @@ loadChunk:{[manifest]
 
     loadNs:`long$.z.p-t0;
 
-    // Feature 5: row-count verification against manifest
+    // Feature 5: row-count verification against manifest.
+    // A mismatch means the CSV delivered fewer (or more) rows than recorded at
+    // download time — treat it as a quality failure so the chunk is not verified.
     expRows:manifest`row_count;
-    $[n=expRows;
+    rowCountOk:n=expRows;
+    $[rowCountOk;
         .lg.o[`loader;"row_count verified: expected=",string[expRows]," actual=",string n];
         .lg.e[`loader;"row_count MISMATCH: expected=",string[expRows]," actual=",string n]
     ];
@@ -427,14 +468,16 @@ loadChunk:{[manifest]
         ()
     ];
 
-    // Update job record: verified if all quality checks pass; else keep loaded
+    // Update job record: verified only if row count matches AND all quality checks pass.
     $[0<count qResult;
-        $[qResult[`failed]=0j;
+        $[(qResult[`failed]=0j) and rowCountOk;
             updateJobRecord[chunkId; `verified; ""];
             updateJobRecord[chunkId; `loaded;
-                "quality failures: dups=",string[qResult`dups],
-                " ordering=",string[qResult`ordering_errors],
-                " nulls=",string[qResult`total_nulls]]
+                $[not rowCountOk;
+                    "row_count mismatch: expected=",string[expRows]," actual=",string n;
+                    "quality failures: dups=",string[qResult`dups],
+                    " ordering=",string[qResult`ordering_errors],
+                    " nulls=",string[qResult`total_nulls]]]
         ];
         ::
     ];
@@ -466,7 +509,22 @@ runLoader:{[]
     // Ensure HDB root exists
     @[system;"mkdir -p ",1_string HDB_DIR;::];
 
+    // Pre-load the HDB sym into the global `sym so that enum domains resolve
+    // correctly when unenumAll calls `get` on existing partitioned splayed tables.
+    // kdb+ resolves an enum column's domain by looking up the domain name (here "sym")
+    // as a global variable first.  Without this, a fresh q session that hasn't yet
+    // called .Q.dpft has no `sym` in scope, and `get` on any partition with enumerated
+    // symbol columns signals '..sym (sym file not found one level up).
+    symPath:` sv HDB_DIR,`sym;
+    if[symPath in key symPath; `sym set get symPath];  // global: visible to loadTrades/loadOhlcv
+
     processManifests manifestDir;
+
+    // Flush accumulated symbology entries to disk once, after all chunks are loaded.
+    // updateSymbologyMap stages entries in .loader.symPending during each loadChunk;
+    // writing once here avoids N CSV read/write cycles for an N-chunk backfill.
+    @[flushSymbologyMap; ::;
+      {[e] .lg.e[`loader;"symbology flush error: ",e]}];
 
     // Fill missing tables across all partitions once, after all chunks are loaded.
     // Calling .Q.chk once here (vs once per chunk in loadChunk) avoids O(N*P) I/O

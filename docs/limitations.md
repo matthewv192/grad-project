@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-All milestones (M0–M4) are complete. The following items remain stubs by design:
+All milestones (M0–M4) are complete, including multi-exchange support. The following items remain stubs by design:
 
 | Component | Status | Notes |
 |---|---|---|
@@ -14,9 +14,8 @@ All milestones (M0–M4) are complete. The following items remain stubs by desig
 
 ## Data Completeness
 
-### Multiple CSVs per Databento job — only first is used
-`run_chunk` in `orchestrator.py` takes `csv_paths[0]` when a download returns multiple files. Databento occasionally splits a single job into multiple CSVs for very large date ranges. If this happens, only the first file is staged and loaded; the rest are silently ignored.
-**Workaround:** Keep chunk sizes small (default 10 symbols × 1 day) to avoid multi-file deliveries.
+### Multiple CSVs per Databento job — each file gets its own manifest
+`run_chunk` in `orchestrator.py` now writes one manifest per CSV when a download returns multiple files. Extra files receive chunk IDs suffixed `_part2`, `_part3`, etc., and a warning is logged. All CSV paths are stored in the job record so that a resumed run re-writes manifests for every part, not just the primary file.
 
 ### Empty partitions not HDB-cross-filled
 When Databento returns a zero-row CSV (holiday, halt, no activity), `loadTrades`/`loadOhlcv` log a warning and return without writing to the HDB. The `.Q.chk` call at the end of `runLoader` will create an empty placeholder for the missing table, but the date partition itself is never created, so `date` values returned by cross-fill queries will have gaps rather than empty rows.
@@ -31,32 +30,32 @@ When Databento returns a zero-row CSV (holiday, halt, no activity), `loadTrades`
 
 ## Data Correctness
 
-### Timestamps assumed UTC — non-UTC process timezone silently corrupts data
-`readTradesCSV` and `readOhlcvCSV` parse Databento's ISO 8601 timestamps with `"P"$ts`. kdb+ interprets the resulting timestamps in the process's local timezone. If `q` is started in a non-UTC timezone (or during a DST transition), all stored timestamps will be off by the TZ offset with no error or warning.
-**Mitigation:** Always start the loader process with `TZ=UTC` set in the environment.
+### Timestamps assumed UTC — q loader process is now forced to UTC
+`readTradesCSV` and `readOhlcvCSV` parse Databento's ISO 8601 timestamps with `"P"$ts`. The orchestrator now sets `TZ=UTC` in the environment passed to the q subprocess, so loader timestamps are always UTC regardless of the host system timezone.
 
-### `infer_date_from_filename` silently returns an empty string on parse failure
-If Databento changes their filename format, the regex in `orchestrator.py` returns `""`. The manifest is then written with `date: ""`, causing the q loader to fail with an opaque type error rather than a meaningful message about the filename.
+### `infer_date_from_filename` raises on parse failure
+If Databento changes their filename format and the regex no longer matches, `orchestrator.py` now raises `ValueError` with a descriptive message instead of writing a manifest with `date: ""`. The chunk is marked `failed` and can be retried once the filename issue is diagnosed.
 
-### Column intersection silently drops unexpected columns
-`(cols[trades] inter cols raw)#raw` in `loader.q` retains only columns that exist in both the schema and the CSV. If Databento adds or removes columns, the mismatch is silently absorbed. New required columns would be missing from the written partition without any error.
+### Column intersection logs a warning on schema drift
+`readTradesCSV` and `readOhlcvCSV` in `loader.q` now log an error listing any schema columns that are absent from the delivered CSV before applying the `inter` filter. Added Databento columns are still silently dropped (as before), but missing required columns are flagged explicitly.
 
 ### Type casting errors crash the loader mid-partition
-The `update ... from raw` casts in `readTradesCSV` / `readOhlcvCSV` (e.g., `` `timestamp$time ``, `` `float$price ``) are not wrapped in protected evaluation. A single malformed value in a large CSV signals an error that aborts the current `loadChunk` call, potentially leaving the partition lock directory behind (stale lock) if the error propagates before `releaseWriteLock` runs.
+The `update ... from raw` casts in `readTradesCSV` / `readOhlcvCSV` are not wrapped in protected evaluation. A single malformed value in a large CSV signals an error that aborts the current `loadChunk` call, potentially leaving the partition lock directory behind (stale lock) if the error propagates before `releaseWriteLock` runs.
+**Recovery:** Clear stale locks with `find hdb -name ".*.lock" -type d -exec rmdir {} +`, reset the chunk status to `downloaded` in the job store, and rerun.
 
 ---
 
 ## Financial Risk
 
-### Cost estimation failure disables the cost safeguard
-`estimate_cost` in `orchestrator.py` catches all exceptions and returns `0.0`. The guard `if MAX_COST_USD > 0 and cost > MAX_COST_USD` will never fire when estimation fails, allowing any-cost job to be submitted. This can happen if the Databento metadata API is temporarily unavailable.
+### Cost estimation failure handling
+`estimate_cost` in `orchestrator.py` now distinguishes Databento API errors (e.g. unknown dataset, invalid symbol) from unexpected failures (network timeout, SDK bug). API errors return `0.0` and log a warning, disabling the safeguard for that chunk. Unexpected errors are re-raised and abort the run, ensuring the cost guard is never silently bypassed by an infrastructure fault.
 
 ---
 
 ## Scalability
 
-### Row counting scans the entire CSV twice
-`count_csv_rows` in `orchestrator.py` reads the file line-by-line to count rows. For multi-million-row trade files this is a second full-file pass after the download. For very large backfills this adds significant latency. A faster alternative is `wc -l` via `subprocess`.
+### Row counting uses `wc -l`
+`count_csv_rows` in `orchestrator.py` delegates to `wc -l` via `subprocess` instead of reading the file line-by-line in Python. For large trade files this is significantly faster as it avoids decoding and object creation per line.
 
 ### Chunk size not validated against Databento API limits
 `BACKFILL_CHUNK_SIZE` (default 10 symbols) is not checked against Databento's actual batch submission limits. If the limit changes or is lower than expected, jobs will fail at submission with a generic API error rather than a pre-submission validation message.
@@ -79,21 +78,21 @@ The Python-side exclusive lock in `run_q_loader` prevents concurrent loader invo
 ### No intraday partition updates
 `.Q.dpft` writes an entire partition atomically. There is no mechanism to append late-arriving trades to an existing date partition. A late trade for an already-loaded date requires deleting the partition, merging in the new row, and re-loading.
 
-### No duplicate `--request-id` detection
-If the same `--request-id` is supplied on two separate invocations, the second run will overwrite job records from the first. There is no uniqueness check or collision warning.
+### Duplicate `--request-id` detection
+When an explicit `--request-id` is provided, the orchestrator checks the job store at startup. If existing records are found with a different symbol set or date range, the run aborts with a clear error. If the parameters match, the run proceeds as an idempotent resume with a warning logged.
 
 ### Config is locked at process start
 `config/settings.q` values are compiled into q at load time. Changing an environment variable after the process has started has no effect. The loader must be restarted to pick up config changes.
 
-### Metrics file gaps when orchestrator crashes before metrics are written
-`updateMetrics` in `loader.q` silently skips if the per-chunk JSON file doesn't exist. If the Python orchestrator crashes before writing the initial metrics file, the q loader will complete successfully but leave a gap in the metrics for that chunk.
+### Metrics file written at chunk start
+`run_chunk` now writes a stub metrics JSON immediately after marking `total_start`, before any API call or file I/O. If the orchestrator crashes mid-run, a partial record is present on disk and will be overwritten on the next retry, so no chunk is ever invisible in the metrics directory.
 
 ---
 
 ## Data Scope
 
-- Any Databento dataset that supports the `trades` or `ohlcv-1m` schema is supported. The dataset is stored as a column in the HDB tables and in the symbology map. Pass `--dataset GLBX.MDP3` (or any valid dataset identifier) to the orchestrator.
-- Only one dataset per HDB partition is supported. Mixing e.g. XNAS.ITCH and GLBX.MDP3 trades in the same partition date is not supported — run separate HDB instances per dataset or use separate table names.
+- Any Databento dataset that provides `trades` or `ohlcv-1m` schema is supported. Tested datasets include `XNAS.ITCH`, `XNYS.PILLAR`, `IEXG.TOPS`, and `EQUS.MINI`.
+- Multiple exchanges can coexist in the same HDB partition date. Each row carries an `exchange` column identifying its source. Exchange-aware idempotency ensures a `(date, exchange)` pair is never loaded twice.
 - Extended hours trades are included in Databento's `trades` schema. Filter on `time` if you only want regular session data.
 - Only `trades` and `ohlcv-1m` schemas are supported. Adding `mbp-1`, `tbbo`, or other Databento schemas requires new column maps in `loader.q` and new schema tables in `schema.q`.
 
@@ -122,4 +121,3 @@ If the same `--request-id` is supplied on two separate invocations, the second r
 - Non-equity asset classes (futures, options, FX) — untested
 - Databento streaming API — not used
 - Windows — shell scripts are bash only; use WSL
-- Multi-dataset single HDB — partitioned tables are not namespaced by dataset; loading XNAS.ITCH and OPRA.PILLAR into the same HDB would require schema changes

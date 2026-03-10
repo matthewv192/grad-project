@@ -9,13 +9,11 @@ A complete guide to running the TorQ Databento backfill pipeline from scratch.
 - **kdb-x 5.0** — installed and on `PATH` (check: `q -q <<< "exit 0"`)
 - **Python 3.10+** with `pip`
 - **A Databento API key** with Historical API access
-- **TorQ** cloned in the directory _alongside_ this project (see layout below)
+- **TorQ** cloned alongside this project (see layout below)
 
 ---
 
 ## Directory Layout
-
-The pipeline expects TorQ to sit one level up from `grad-project/`:
 
 ```
 ~/                          ← (or any common parent)
@@ -38,7 +36,7 @@ git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ
 
 ```bash
 cd ~/grad-project
-python -m venv ../venv
+python3 -m venv ../venv
 source ../venv/bin/activate
 pip install -e .
 ```
@@ -93,15 +91,17 @@ All commands are run from inside `grad-project/`.
 | `--start` | _(required)_ | Start date, inclusive (YYYY-MM-DD) |
 | `--end` | _(required)_ | End date, inclusive (YYYY-MM-DD) |
 | `--schema` | `trades` | `trades` or `ohlcv-1m` |
-| `--dataset` | `XNAS.ITCH` | Databento dataset |
+| `--dataset` | `XNAS.ITCH` | Databento dataset identifier |
 | `--chunk-size` | `10` | Symbols per batch job |
 | `--dry-run` | off | Print cost estimate only; no API calls |
-| `--skip-load` | off | Download only; skip the q loader |
+| `--download-only` | off | Download and stage CSVs; skip the q loader |
+| `--load-only` | off | Skip API calls; run the q loader on existing staged manifests |
+| `--metrics` | off | Print per-chunk timing metrics and exit |
 
 The script:
 1. Sources `setenv.sh` and activates the venv
 2. Calls `orchestrator.py` which submits one Databento job per (day × symbol-batch)
-3. Polls until each job is done, downloads the CSV, writes a manifest
+3. Polls until each job is done, downloads the CSV, writes a JSON manifest
 4. Invokes the q loader to write data into `hdb/`
 
 Progress is logged to stdout in JSON format.
@@ -152,32 +152,63 @@ OHLCV bars are written to `hdb/YYYY.MM.DD/ohlcv_1m/`.
 
 ---
 
+## Loading Multiple Exchanges
+
+The loader merges data from different exchanges into the same HDB partition.
+Run a separate backfill per dataset; each load appends its rows to the existing partition:
+
+```bash
+# Load NASDAQ data
+./scripts/request_backfill.sh \
+    --symbols "AAPL,MSFT" --start 2024-01-17 --end 2024-01-17 \
+    --schema ohlcv-1m --dataset XNAS.ITCH
+
+# Add NYSE data to the same partition
+./scripts/request_backfill.sh \
+    --symbols "AAPL,MSFT" --start 2024-01-17 --end 2024-01-17 \
+    --schema ohlcv-1m --dataset XNYS.PILLAR
+
+# Add IEX data
+./scripts/request_backfill.sh \
+    --symbols "AAPL,MSFT" --start 2024-01-17 --end 2024-01-17 \
+    --schema ohlcv-1m --dataset IEXG.TOPS
+```
+
+Supported Databento datasets include `XNAS.ITCH`, `XNYS.PILLAR`, `IEXG.TOPS`, `EQUS.MINI`, and any other dataset that provides `trades` or `ohlcv-1m` schema. The `exchange` column in each HDB table identifies the source.
+
+Idempotency is exchange-aware: re-running a load for an already-loaded `(date, exchange)` pair is detected and skipped without re-writing any data.
+
+---
+
 ## Querying the HDB
 
 ### Interactive q session
 
 ```bash
 cd ~/grad-project
-q -q
+q hdb
 ```
 
 ```q
-\l hdb
+/ Row counts by exchange for a partition date
+select count i by exchange from ohlcv_1m where date=2024.01.17
 
-/ Row counts by date and symbol
-select count i by date, sym from trades
+/ A specific day and symbol
+select from trades where date=2024.06.03, sym=`AAPL
 
-/ A specific day
-select from trades where date = 2024.06.03, sym = `AAPL
+/ Filter by exchange
+select from ohlcv_1m where date=2024.01.17, sym=`AAPL, exchange=`XNAS.ITCH
 
-/ Time range with aggregation
+/ Time range with VWAP (trades schema)
 select vwap: size wavg price, total_size: sum size
     by sym, 0D00:30 xbar time
     from trades
-    where date = 2024.06.03, sym in `AAPL`MSFT
+    where date=2024.06.03, sym in `AAPL`MSFT
 
-/ OHLCV bars (if loaded)
-select from ohlcv_1m where date = 2024.06.03, sym = `AAPL
+/ Compare OHLCV across exchanges for the same symbol/date
+select open, high, low, close, volume by exchange
+    from ohlcv_1m
+    where date=2024.01.17, sym=`AAPL
 ```
 
 ### Adjusted close prices
@@ -197,20 +228,31 @@ getAdjustedClose[`AAPL; 2024.06.03; 2024.06.05; `split]
 
 ## HDB Layout
 
-After loading data the HDB looks like:
+After loading data from multiple exchanges the HDB looks like:
 
 ```
 hdb/
+├── 2024.01.17/
+│   └── ohlcv_1m/           ← splayed table with rows from all exchanges
+│       ├── sym              ← enumerated symbol (parted column)
+│       ├── time
+│       ├── exchange         ← identifies source (XNAS.ITCH, XNYS.PILLAR, etc.)
+│       ├── instrument_id
+│       ├── open
+│       ├── high
+│       ├── low
+│       ├── close
+│       ├── volume
+│       └── date
 ├── 2024.06.03/
-│   ├── trades/         ← splayed table (one file per column)
-│   │   ├── sym
-│   │   ├── time
-│   │   ├── price
-│   │   └── ...
-│   └── ohlcv_1m/       ← present if ohlcv-1m was requested
-├── 2024.06.04/
-│   └── ...
-└── sym                 ← symbol enumeration file (shared)
+│   └── trades/             ← splayed table
+│       ├── sym
+│       ├── time
+│       ├── exchange
+│       ├── price
+│       ├── size
+│       └── ...
+└── sym                     ← symbol enumeration file (shared across all partitions)
 ```
 
 ---
@@ -219,15 +261,18 @@ hdb/
 
 ```bash
 # All unit tests
-for f in tests/test_schema.q tests/test_manifest.q tests/test_loader.q \
-          tests/test_ref_tables.q tests/test_adj.q; do
-    q $f -q
-done
+q tests/test_schema.q
+q tests/test_manifest.q
+q tests/test_loader.q
+q tests/test_symbology.q
+
+# Adjustment library tests
+q tests/test_adj.q
 
 # Integration test (requires a loaded HDB partition)
 INTEGRATION_TEST_DATE=2024-06-03 \
 INTEGRATION_TEST_SYM=AAPL \
-q tests/test_integration.q -q
+q tests/test_integration.q
 ```
 
 ---
@@ -236,10 +281,14 @@ q tests/test_integration.q -q
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `LD_LIBRARY_PATH: unbound variable` | `set -u` with unset var | Already fixed — `setenv.sh` now uses `${LD_LIBRARY_PATH:-}` |
+| `LD_LIBRARY_PATH: unbound variable` | `set -u` with unset var | Already fixed — `setenv.sh` uses `${LD_LIBRARY_PATH:-}` |
 | `TORQHOME = ` (empty) | `setenv.sh` sourced before `cd grad-project` | Always source from inside `grad-project/` |
 | `DATABENTO_API_KEY is not set` | Key not exported | `export DATABENTO_API_KEY="db-..."` before sourcing |
 | `q loader exited 1` | q can't find `schema/schema.q` | Ensure you're running from inside `grad-project/` |
-| Empty HDB partitions | Date not extracted from filename | Fixed — `infer_date_from_filename` now uses regex |
-| Chunk shows `failed` in status | API error or cost limit hit | Run `retry_failed.sh`; check error in `staging/metadata/jobs/` |
+| `write lock held for ...` | Stale lock from a crashed run | Run `find hdb -name ".*.lock" -type d -exec rmdir {} +` then reset the chunk status to `downloaded` in `staging/metadata/jobs/` |
+| `ValueError: Cannot infer date from filename` | Databento changed filename format | Check the downloaded CSV filename; report the new pattern to update the regex |
+| `request_id already exists with different parameters` | `--request-id` collision | Omit `--request-id` to auto-generate a new one, or use `--retry-failed` to resume the original run |
+| `Job ... failed at Databento` | Databento rejected or failed the batch job | Check the error detail in the log; run `retry_failed.sh` after the cause is resolved |
+| Chunk shows `failed` in status | API error or cost limit hit | Run `retry_failed.sh`; inspect error in `staging/metadata/jobs/` |
 | Old stale manifest causes validation error | CSV file deleted but manifest remains | Safe to ignore — logged as a warning, does not block other chunks |
+| `ModuleNotFoundError: No module named 'databento'` | venv not activated | Run `source ../venv/bin/activate` or `source setenv.sh` first |

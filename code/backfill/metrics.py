@@ -16,10 +16,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-STAGING_DIR = Path(os.environ.get("STAGING_DIR",
-                                   str(Path(__file__).resolve().parent / "../../staging")))
-
-
 @dataclass
 class ChunkMetrics:
     """Timing and throughput metrics for one chunk across all pipeline stages."""

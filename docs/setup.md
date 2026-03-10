@@ -6,24 +6,26 @@
 |---|---|---|
 | kdb+ / kdb-x | 5.0 | Must be on `PATH` as `q` |
 | Python | ≥ 3.10 | |
-| TorQ | latest main | Cloned to `../TorQ` relative to this package |
+| TorQ | latest main | Cloned alongside this package (see layout below) |
 | Databento account | — | API key required for real data |
 
 ---
 
 ## 1. Clone and position the repos
 
+Both repos must sit side-by-side under the same parent directory:
+
 ```bash
-# Both repos must sit side-by-side
-git clone https://github.com/AquaQAnalytics/TorQ.git
-git clone <this-repo> grad-project
+git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ
+git clone <this-repo> ~/grad-project
 ```
 
-Directory layout expected:
+Expected layout:
 ```
-parent/
+~/
 ├── TorQ/
-└── grad-project/
+├── grad-project/
+└── venv/          ← created in step 2
 ```
 
 ---
@@ -31,10 +33,10 @@ parent/
 ## 2. Set up Python environment
 
 ```bash
-cd ..   # parent directory
-python3 -m venv venv
-source venv/bin/activate
-pip install -e grad-project/
+cd ~/grad-project
+python3 -m venv ../venv
+source ../venv/bin/activate
+pip install -e .
 ```
 
 ---
@@ -42,28 +44,38 @@ pip install -e grad-project/
 ## 3. Configure environment
 
 ```bash
-cd grad-project
+cd ~/grad-project
 
 # Set your Databento API key before sourcing
-export DATABENTO_API_KEY="your-key-here"
+export DATABENTO_API_KEY="db-XXXXXXXXXXXXXXXXXXXX"
 
-# Load all environment variables
+# Load all environment variables and activate the venv
 source setenv.sh
 ```
 
+Expected output:
+```
+TORQHOME    = /home/<user>/TorQ
+PACKAGEHOME = /home/<user>/grad-project
+KDBHDB      = /home/<user>/grad-project/hdb
+```
+
+`setenv.sh` sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and activates the venv if it exists at `../venv`.
+
 ---
 
-## 4. Run your first backfill (dry run)
+## 4. Run a dry run (no API calls)
 
 ```bash
-# Estimate cost and print the chunk plan — no API calls are submitted
 ./scripts/request_backfill.sh \
     --symbols "AAPL,MSFT" \
-    --start 2024-01-15 \
-    --end 2024-01-15 \
-    --schema trades \
+    --start 2024-01-17 \
+    --end 2024-01-17 \
+    --schema ohlcv-1m \
     --dry-run
 ```
+
+This prints a cost estimate and chunk plan without submitting any Databento jobs.
 
 ---
 
@@ -71,34 +83,49 @@ source setenv.sh
 
 ```bash
 ./scripts/request_backfill.sh \
-    --symbols "AAPL" \
-    --start 2024-01-15 \
-    --end 2024-01-15 \
-    --schema trades
+    --symbols "AAPL,MSFT" \
+    --start 2024-01-17 \
+    --end 2024-01-17 \
+    --schema ohlcv-1m
 ```
 
-Downloaded files land in `staging/<request_id>/`.
+Downloaded CSVs land in `staging/<chunk_id>/`. Manifests are written to `staging/metadata/manifests/`. The q loader is invoked automatically after download.
 
 ---
 
-## 6. Load into the HDB
+## 6. Load from a second exchange into the same partition
 
 ```bash
-q code/backfill/loader.q -e "runLoader[];exit 0"
+./scripts/request_backfill.sh \
+    --symbols "AAPL,MSFT" \
+    --start 2024-01-17 \
+    --end 2024-01-17 \
+    --schema ohlcv-1m \
+    --dataset XNYS.PILLAR
 ```
 
-HDB partitions are written to `hdb/`.
+The loader merges XNYS.PILLAR rows into the existing `hdb/2024.01.17/ohlcv_1m/` partition alongside XNAS.ITCH rows. Each row carries an `exchange` column.
+
+Supported datasets include: `XNAS.ITCH`, `XNYS.PILLAR`, `IEXG.TOPS`, `EQUS.MINI`, and any other Databento dataset that provides `trades` or `ohlcv-1m` schema.
 
 ---
 
 ## 7. Query the HDB
 
 ```bash
+cd ~/grad-project
 q hdb
 ```
 
 ```q
-select from trades where date=2024.01.15, sym=`AAPL
+/ Row counts by exchange for a specific date
+select count i by exchange from ohlcv_1m where date=2024.01.17
+
+/ All AAPL trades on a day
+select from trades where date=2024.01.17, sym=`AAPL
+
+/ OHLCV bars for MSFT on NASDAQ
+select from ohlcv_1m where date=2024.01.17, sym=`MSFT, exchange=`XNAS.ITCH
 ```
 
 ---
@@ -106,9 +133,17 @@ select from trades where date=2024.01.15, sym=`AAPL
 ## 8. Run unit tests
 
 ```bash
+cd ~/grad-project
 q tests/test_schema.q
 q tests/test_manifest.q
+q tests/test_loader.q
+q tests/test_symbology.q
+q tests/test_quality.q
+q tests/test_ref_tables.q
+q tests/test_adj.q
 ```
+
+All seven tests exit 0 on success. None require a Databento API key or a loaded HDB.
 
 ---
 

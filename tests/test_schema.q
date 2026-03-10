@@ -51,10 +51,10 @@ assertEq["ohlcv_1m col count"; count cols ohlcv_1m; 10];
 // backfill_jobs
 // ---------------------------------------------------------------------------
 
-expectedJobCols:`request_id`chunk_id`databento_job_id`schema`symbols`start_date`end_date`status`retries`error_msg`file_path`checksum`row_count`min_ts`max_ts`created_at`updated_at;
+expectedJobCols:`request_id`chunk_id`databento_job_id`schema`symbols`start_date`end_date`status`retries`error_msg`file_path`file_paths`checksum`row_count`min_ts`max_ts`created_at`updated_at;
 
 assertEq["backfill_jobs cols"; cols backfill_jobs; expectedJobCols];
-assertEq["backfill_jobs col count"; count cols backfill_jobs; 17];
+assertEq["backfill_jobs col count"; count cols backfill_jobs; 18];
 
 // ---------------------------------------------------------------------------
 // Reference tables

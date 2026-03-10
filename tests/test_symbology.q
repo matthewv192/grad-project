@@ -97,8 +97,10 @@ rawData:([]
     sequence:1 2j
  );
 
-// Call updateSymbologyMap with the raw data
+// updateSymbologyMap now accumulates in .loader.symPending (no disk write).
+// flushSymbologyMap merges the accumulator with the on-disk CSV and writes once.
 updateSymbologyMap[rawData; 2024.06.03; `$"XNAS.ITCH"];
+flushSymbologyMap[];
 
 // Verify the CSV was created
 mapPath:hsym`$(tmpStaging,"/reference/symbology_map.csv");
@@ -110,8 +112,9 @@ assertEq["symbology CSV has 2 rows"; count written; 2j];
 assertEq["AAPL in symbology map"; `AAPL in written`sym; 1b];
 assertEq["MSFT in symbology map"; `MSFT in written`sym; 1b];
 
-// Verify idempotency: calling again with same data should not add rows
+// Verify idempotency: accumulating same data and flushing again should not add rows
 updateSymbologyMap[rawData; 2024.06.03; `$"XNAS.ITCH"];
+flushSymbologyMap[];
 written2:("SJSDD";enlist csv) 0: mapPath;
 assertEq["idempotent: still 2 rows after second call"; count written2; 2j];
 
@@ -128,6 +131,7 @@ newData:([]
     sequence:enlist 5j
  );
 updateSymbologyMap[newData; 2024.06.04; `$"XNAS.ITCH"];
+flushSymbologyMap[];
 written3:("SJSDD";enlist csv) 0: mapPath;
 assertEq["new sym TSLA added"; count written3; 3j];
 assertEq["TSLA in symbology map"; `TSLA in written3`sym; 1b];
