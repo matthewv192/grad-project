@@ -35,9 +35,8 @@ source setenv.sh
 # Query across exchanges
 q hdb <<< 'select count i by exchange from ohlcv_1m where date=2024.01.17'
 
-# Unit tests
-q tests/test_schema.q && q tests/test_manifest.q && \
-q tests/test_loader.q && q tests/test_symbology.q
+# Full test suite (8 q tests + 2 Python tests)
+./scripts/run_tests.sh
 ```
 
 See [docs/how_to_run.md](docs/how_to_run.md) for the full guide.
@@ -74,10 +73,15 @@ grad-project/
 │   ├── test_schema.q
 │   ├── test_manifest.q
 │   ├── test_loader.q
+│   ├── test_quality.q
 │   ├── test_symbology.q
+│   ├── test_ref_tables.q
 │   ├── test_adj.q
-│   └── test_integration.q
+│   ├── test_integration.q
+│   ├── test_orchestrator.py
+│   └── test_metrics.py
 └── docs/
+    ├── architecture.md
     ├── how_to_run.md
     ├── setup.md
     ├── config_reference.md

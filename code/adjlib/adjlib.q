@@ -42,7 +42,7 @@ applyAdj:{[ohlcvData;factors]
     joined:ohlcvData lj kf;
 
     // Fill missing factors with 1.0 so unadjusted bars pass through unchanged
-    joined:update cumulative_factor:1.0 from joined where null cumulative_factor;
+    joined:update cumulative_factor:1.0^cumulative_factor from joined;
 
     // Vectorised price adjustment (multiply) and volume adjustment (divide)
     adjusted:update
@@ -123,7 +123,7 @@ getAdjustedClose:{[syms;startDate;endDate;method]
         [firstF:select first_factor:first cumulative_factor by sym
                  from `date xasc factors;
          adjFwd:adjBars lj firstF;
-         adjFwd:update first_factor:1.0 from adjFwd where null first_factor;
+         adjFwd:update first_factor:1.0^first_factor from adjFwd;
          adjFwd:update
              open:   open  % first_factor,
              high:   high  % first_factor,

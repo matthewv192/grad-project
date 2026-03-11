@@ -29,19 +29,19 @@ echo "Date   : $INTEGRATION_TEST_DATE"
 echo ""
 
 # Step 1: run backfill (submit → poll → download → convert → write manifests)
-# --skip-load so we run the q loader manually in step 2 with explicit env vars
+# --download-only so we run the q loader manually in step 2 with explicit env vars
 echo "[1/3] Running orchestrator..."
 python "$PACKAGE_DIR/code/backfill/orchestrator.py" \
     --symbols "$INTEGRATION_TEST_SYM" \
     --start "$INTEGRATION_TEST_DATE" \
     --end "$INTEGRATION_TEST_DATE" \
     --schema trades \
-    --skip-load
+    --download-only
 
-# Step 2: run q loader
+# Step 2: run q loader (pipe commands via stdin — kdb+'s -e flag is error trap level, not eval)
 echo "[2/3] Running q loader..."
 cd "$PACKAGE_DIR"
-q code/backfill/loader.q -e "runLoader[];exit 0"
+printf '\\l code/backfill/loader.q\nrunLoader[]\nexit 0\n' | q -q
 
 # Step 3: run integration assertions
 echo "[3/3] Running integration assertions..."

@@ -200,151 +200,12 @@ checkExchangeLoaded:{[partDateDir;tableName;exchange]
     exchange in `$string get exFile
  };
 
-loadTrades:{[csvPath;partDate;dataset]
-    partDateDir:` sv HDB_DIR,`$string partDate;
-
-    // Fast-path idempotency check — exchange-aware (no lock, read-only).
-    if[checkExchangeLoaded[partDateDir;`trades;dataset];
-        // Unenumerate: .Q.dpft enumerates all symbol columns; plain comparison fails
-        n:count where dataset=`$string get ` sv partDateDir,`trades`exchange;
-        .lg.o[`loader;"trades already loaded for ",string[partDate],
-              " dataset=",string[dataset]," (",string[n]," rows) — skipping"];
-        :n
-    ];
-
-    .lg.o[`loader;"loading trades: ",string csvPath];
-    t0:.z.p;
-
-    raw:readTradesCSV csvPath;
-
-    if[0=count raw;
-        .lg.o[`loader;"WARNING: empty CSV, skipping: ",string csvPath];
-        :0j
-    ];
-
-    // Add partition columns: date (from filename) and exchange (from manifest dataset)
-    raw:update date:partDate, exchange:dataset from raw;
-
-    // Sort by sym then time — required for binary search queries in the HDB.
-    // Drop date before xasc: when an HDB is loaded in the same q session,
-    // .Q.xasc intercepts xasc and errors with 'dup date if `date` is present.
-    raw:update date:partDate from `sym`time xasc delete date from raw;
-
-    // Acquire per-partition write lock (atomic mkdir) before writing.
-    // Re-check under lock: another process may have written between our check and lock.
-    lockDir:acquireWriteLock[partDateDir;`trades];
-    if[checkExchangeLoaded[partDateDir;`trades;dataset];
-        releaseWriteLock lockDir;
-        n:count where dataset=`$string get ` sv partDateDir,`trades`exchange;
-        .lg.o[`loader;"trades already loaded for ",string[partDate],
-              " dataset=",string[dataset]," (",string[n]," rows) — skipping"];
-        :n
-    ];
-
-    // If rows from other exchanges exist in this partition, merge them in.
-    // Unenumerate ALL type-20h columns (sym, exchange, side, conditions, …) before
-    // concatenation — .Q.dpft enumerates every symbol column; plain comparison or
-    // concatenation against a fresh load will signal 'mismatch if any are left enumerated.
-    // Note: `get` on a splayed table within a partitioned HDB suppresses the `date`
-    // column (it is the partition key, stored in the dir name), so we restore it
-    // explicitly before schema-selecting so the column sets of existing and raw match.
-    merged:raw;
-    if[`trades in key partDateDir;
-        existing:unenumAll get ` sv partDateDir,`trades;
-        existing:update date:partDate from existing;
-        // schema-select: handle old partitions that may be missing the exchange column
-        existing:(cols[trades] inter cols existing)#existing;
-        // Reorder raw to match existing's column order before concatenation.
-        // The column order of `raw` depends on how `update date,exchange` appended
-        // those columns, which varies based on whether `trades` global is the empty
-        // schema stub (date-first) or a previously loaded HDB (also date-first after
-        // schema-select) or a previous .Q.dpft result (date near end).
-        // Using `cols[existing]` as the authoritative order makes the merge robust
-        // regardless of session state.
-        // Drop `date` before xasc: when an HDB is loaded in the same q session,
-        // .Q.xasc intercepts xasc and errors with 'dup date if `date` is present.
-        // Restore it afterwards.
-        noDate:delete date from existing,((cols existing)#raw);
-        merged:update date:partDate from `sym`time xasc noDate
-    ];
-
-    // .Q.dpft[d;p;f;t] writes a splayed partition and updates the sym file.
-    `trades set merged;
-    .[.Q.dpft; (HDB_DIR; partDate; `sym; `trades);
-      {[lockDir;e] releaseWriteLock lockDir; 'e}[lockDir;]];
-    releaseWriteLock lockDir;
-
-    n:count raw;
-    nTotal:count merged;
-    elapsed:(`long$(.z.p-t0))%1000000;
-    .lg.o[`loader;"trades loaded: date=",string[partDate]," dataset=",string[dataset],
-          " new=",string[n]," total=",string[nTotal]," elapsed=",string[elapsed],"ms"];
-    n
- };
+loadTrades:{[csvPath;partDate;dataset] '"deprecated - use loadChunkBatch"};
 
 // ---------------------------------------------------------------------------
 // loadOhlcv — load one ohlcv-1m CSV into the HDB for a given partition date.
 // ---------------------------------------------------------------------------
-loadOhlcv:{[csvPath;partDate;dataset]
-    partDateDir:` sv HDB_DIR,`$string partDate;
-
-    // Fast-path idempotency check — exchange-aware (no lock, read-only).
-    if[checkExchangeLoaded[partDateDir;`ohlcv_1m;dataset];
-        n:count where dataset=`$string get ` sv partDateDir,`ohlcv_1m`exchange;
-        .lg.o[`loader;"ohlcv_1m already loaded for ",string[partDate],
-              " dataset=",string[dataset]," (",string[n]," rows) — skipping"];
-        :n
-    ];
-
-    .lg.o[`loader;"loading ohlcv_1m: ",string csvPath];
-    t0:.z.p;
-
-    raw:readOhlcvCSV csvPath;
-
-    if[0=count raw;
-        .lg.o[`loader;"WARNING: empty CSV, skipping: ",string csvPath];
-        :0j
-    ];
-
-    raw:update date:partDate, exchange:dataset from raw;
-    raw:update date:partDate from `sym`time xasc delete date from raw;
-
-    // Acquire per-partition write lock (atomic mkdir) before writing.
-    // Re-check under lock: another process may have written between our check and lock.
-    lockDir:acquireWriteLock[partDateDir;`ohlcv_1m];
-    if[checkExchangeLoaded[partDateDir;`ohlcv_1m;dataset];
-        releaseWriteLock lockDir;
-        n:count where dataset=`$string get ` sv partDateDir,`ohlcv_1m`exchange;
-        .lg.o[`loader;"ohlcv_1m already loaded for ",string[partDate],
-              " dataset=",string[dataset]," (",string[n]," rows) — skipping"];
-        :n
-    ];
-
-    // If rows from other exchanges exist in this partition, merge them in.
-    // Unenumerate ALL type-20h columns before concatenation (see unenumAll).
-    // Note: `get` on a splayed table within a partitioned HDB suppresses the `date`
-    // column, so we restore it explicitly before schema-selecting.
-    merged:raw;
-    if[`ohlcv_1m in key partDateDir;
-        existing:unenumAll get ` sv partDateDir,`ohlcv_1m;
-        existing:update date:partDate from existing;
-        existing:(cols[ohlcv_1m] inter cols existing)#existing;
-        noDate:delete date from existing,((cols existing)#raw);
-        merged:update date:partDate from `sym`time xasc noDate
-    ];
-
-    `ohlcv_1m set merged;
-    .[.Q.dpft; (HDB_DIR; partDate; `sym; `ohlcv_1m);
-      {[lockDir;e] releaseWriteLock lockDir; 'e}[lockDir;]];
-    releaseWriteLock lockDir;
-
-    n:count raw;
-    nTotal:count merged;
-    elapsed:(`long$(.z.p-t0))%1000000;
-    .lg.o[`loader;"ohlcv_1m loaded: date=",string[partDate]," dataset=",string[dataset],
-          " new=",string[n]," total=",string[nTotal]," elapsed=",string[elapsed],"ms"];
-    n
- };
+loadOhlcv:{[csvPath;partDate;dataset] '"deprecated - use loadChunkBatch"};
 
 // ---------------------------------------------------------------------------
 // updateJobRecord — write quality/verified status back to the Python job store.
@@ -383,9 +244,9 @@ updateJobRecord:{[chunkId;newStatus;errMsg]
 
 // updateSymbologyMap — extract new (sym, instrument_id) pairs and stage them
 // in the in-memory accumulator.  Does NOT write to disk.
-updateSymbologyMap:{[raw;partDate;dataset]
-    newRows:update exchange:dataset, valid_from:partDate, valid_to:9999.12.31
-             from 0!(select by sym, instrument_id from raw);
+updateSymbologyMap:{[raw;partDate]
+    newRows:update valid_from:partDate, valid_to:9999.12.31
+             from 0!(select by sym, instrument_id, exchange from raw);
     newRows:`sym`instrument_id`exchange`valid_from`valid_to#newRows;
     `.loader.symPending upsert newRows;
  };
@@ -450,7 +311,7 @@ updateMetrics:{[chunkId;requestId;loadNs;rowCount]
     raw:.j.k raze read0 p;
     load_s:`float$loadNs%1000000000j;
     raw[`load_s]:load_s;
-    raw[`row_count]:rowCount;
+    raw[`rows_loaded]:rowCount;
     raw[`updated_at]:string .z.p;
     // Write atomically via tmp file then shell rename — same pattern as
     // updateJobRecord — prevents a q crash mid-write from corrupting the file.
@@ -464,87 +325,111 @@ updateMetrics:{[chunkId;requestId;loadNs;rowCount]
 // loadChunk — dispatch a validated manifest to the right loader function.
 // Called by processManifests in manifest.q.
 // ---------------------------------------------------------------------------
-loadChunk:{[manifest]
-    schema:manifest`schema;
-    csvPath:manifest`file_path;
-    partDate:manifest`date;
-    chunkId:manifest`chunk_id;
-    requestId:manifest`request_id;
-    dataset:manifest`exchange;
+loadChunkBatch:{[manifests]
+    if[0=count manifests; :0j];
+
+    schema:first manifests`schema;
+    partDate:first manifests`date;
 
     t0:.z.p;
+    
+    partDateDir:` sv HDB_DIR,`$string partDate;
 
-    // Route to the correct loader based on schema
-    n:$[schema=`trades;
-        loadTrades[csvPath; partDate; dataset];
-        schema=`ohlcv_1m;
-        loadOhlcv[csvPath; partDate; dataset];
-        '"unsupported schema: ",string schema
+    // Fast-path idempotency: exclude chunks loaded by checking exchange
+    pendingIdx:where not {[partDateDir;schema;m] checkExchangeLoaded[partDateDir;schema;m`exchange]}[partDateDir;schema;] each manifests;
+    pending:manifests pendingIdx;
+    
+    if[0=count pending;
+        .lg.o[`loader;"all chunks in batch already loaded for date=",string[partDate]," schema=",string[schema]];
+        :0j
     ];
 
-    loadNs:`long$.z.p-t0;
+    .lg.o[`loader;"loading batch: schema=",string[schema]," date=",string[partDate]," chunks=",string count pending];
 
-    // Feature 5: row-count verification against manifest.
-    // A mismatch means the CSV delivered fewer (or more) rows than recorded at
-    // download time — treat it as a quality failure so the chunk is not verified.
-    expRows:manifest`row_count;
-    rowCountOk:n=expRows;
-    $[rowCountOk;
-        .lg.o[`loader;"row_count verified: expected=",string[expRows]," actual=",string n];
-        .lg.e[`loader;"row_count MISMATCH: expected=",string[expRows]," actual=",string n]
-    ];
-
-    // Feature 4: data quality checks on the freshly loaded table global.
-    // Error handler returns a result dict with failed=1j (one failed check) so
-    // that a quality-check crash is treated as a quality failure, not a pass.
-    qResult:$[n>0;
-        .[runQualityChecks; (value schema; schema; partDate);
-          {[e] .lg.e[`loader;"quality check error: ",e];
-           `dups`ordering_errors`nulls`total_nulls`passed`failed`checks!
-           (0j;0j;(`symbol$())!`long$();0j;0j;1j;3j)}];
-        ()
-    ];
-
-    // Update job record: verified only if row count matches AND all quality checks pass.
-    $[0<count qResult;
-        $[(qResult[`failed]=0j) and rowCountOk;
-            updateJobRecord[chunkId; `verified; ""];
-            updateJobRecord[chunkId; `loaded;
-                $[not rowCountOk;
-                    "row_count mismatch: expected=",string[expRows]," actual=",string n;
-                    "quality failures: dups=",string[qResult`dups],
-                    " ordering=",string[qResult`ordering_errors],
-                    " nulls=",string[qResult`total_nulls]]]
+    raws:{[m;schema]
+        r:$[schema=`trades; readTradesCSV m`file_path; readOhlcvCSV m`file_path];
+        if[not (count r)=m`row_count;
+            .lg.e[`loader;"row_count MISMATCH for chunk ",string[m`chunk_id],": expected=",string[m`row_count]," actual=",string count r];
+            updateJobRecord[m`chunk_id; `failed; "row_count mismatch: expected=",string[m`row_count]," actual=",string count r];
+            :0b
         ];
-        ::
+        // Ensure exchange, chunk_id and date partition columns added
+        if[count r; r:update date:m[`date], exchange:m[`exchange], chunk_id:m[`chunk_id] from r];
+        r
+    }[;schema] each pending;
+
+    validIdx:where not raws~\:0b;
+    validPending:pending validIdx;
+    validRaws:raws validIdx;
+    nValid:count validRaws;
+    
+    if[0=nValid; :0j];
+
+    raw:(uj/) validRaws;
+    
+    nCombined:count raw;
+    if[0=nCombined;
+        .lg.o[`loader;"WARNING: empty combined batch"];
+        {[m] updateJobRecord[m`chunk_id; `verified; ""]; updateJobRecord[m`chunk_id; `loaded; ""]} each validPending;
+        :0j
     ];
 
-    // Feature 3b: update job record with min/max timestamps from written partition
-    // (observability — records the actual data time range after the partition write)
-    if[n>0;
-        partDateDir:` sv HDB_DIR,`$string partDate;
-        timePath:` sv partDateDir,schema,`time;
-        if[timePath in key timePath;
-            times:get timePath;
-            if[count times;
-                @[updateJobRecordTimestamps; (chunkId; min times; max times);
-                  {[e] .lg.o[`loader;"ts update skipped: ",e]}]
-            ]
-        ]
+    // Data quality checks on the freshly loaded table batch
+    qResult:.[runQualityChecks; (raw; schema; partDate);
+          {[e] .lg.e[`loader;"quality check error: ",e];
+           `dups`ordering_errors`nulls`total_nulls`passed`failed`checks!(0j;0j;(`symbol$())!`long$();0j;0j;1j;3j)}];
+
+    if[count[qResult] and qResult[`failed]>0j;
+        msg:"quality failures: dups=",string[qResult`dups]," ordering=",string[qResult`ordering_errors]," nulls=",string[qResult`total_nulls];
+        {[m;msg] updateJobRecord[m`chunk_id; `loaded; msg]; updateJobRecord[m`chunk_id; `failed; "quality checks failed"]} [;msg] each validPending;
+        :0j
     ];
 
-    // Feature 1: update symbology map with (sym,instrument_id) pairs from this load
-    if[n>0;
-        @[updateSymbologyMap; (value schema; partDate; dataset);
-          {[e] .lg.e[`loader;"symbology update error: ",e]}]
+    // Proceed to dump to HDB
+    raw:delete chunk_id from raw;
+    raw:update date:partDate from `sym`time xasc delete date from raw;
+
+    lockDir:acquireWriteLock[partDateDir;schema];
+
+    merged:raw;
+    if[schema in key partDateDir;
+        existing:unenumAll get ` sv partDateDir,schema;
+        existing:update date:partDate from existing;
+        existing:(cols[value schema] inter cols existing)#existing;
+        noDate:delete date from existing,((cols existing)#raw);
+        merged:update date:partDate from `sym`time xasc noDate
     ];
 
-    // Feature 3: update per-chunk metrics file with load timing
-    @[updateMetrics; (chunkId; requestId; loadNs; n);
-      {[e] .lg.o[`loader;"metrics update skipped (file not found)"]}];
+    (`$string schema) set merged;
+    .[.Q.dpft; (HDB_DIR; partDate; `sym; schema);
+      {[lockDir;e] releaseWriteLock lockDir; 'e}[lockDir;]];
+    releaseWriteLock lockDir;
 
-    .lg.o[`loader;"chunk done: chunk_id=",string[chunkId]," rows=",string n];
-    n
+    loadNs:(`long$.z.p-t0);
+    timePath:` sv partDateDir,schema,`time;
+    times:(); if[timePath in key timePath; times:get timePath];
+
+    {[m;schema;partDate;loadNs;times;nValid;raw]
+        chunkId:m`chunk_id;
+        requestId:m`request_id;
+        rowCount:m`row_count;
+        dataset:m`exchange;
+        
+        updateJobRecord[chunkId; `verified; ""];
+        updateJobRecord[chunkId; `loaded; ""];
+        
+        if[count times; @[updateJobRecordTimestamps; (chunkId; min times; max times); {[e] }]];
+        
+        // Per chunk updates
+        @[updateMetrics; (chunkId; requestId; loadNs div nValid; rowCount); {[e] }];
+    }[;schema;partDate;loadNs;times;nValid;raw] each validPending;
+    
+    // Batch updates
+    @[updateSymbologyMap; (raw; partDate); {[e] .lg.e[`loader;"symbology map error: ",e]}];
+
+    .lg.o[`loader;"batch loaded: date=",string[partDate]," schema=",string[schema]," chunks=",string[nValid]," new_rows=",string nCombined];
+
+    nCombined
  };
 
 // ---------------------------------------------------------------------------

@@ -30,10 +30,12 @@ from orchestrator import (
     JobRecord,
     JobStore,
     MAX_RETRIES,
+    _classify_error,
     count_csv_rows,
     estimate_cost,
     generate_chunks,
     infer_date_from_filename,
+    run_chunk,
     sha256_of_file,
 )
 
@@ -101,6 +103,20 @@ class TestGenerateChunks(unittest.TestCase):
         self.assertEqual(c.request_id, self.REQ)
         self.assertEqual(c.schema, self.SCHEMA)
         self.assertEqual(c.dataset, self.DATASET)
+
+    def test_stype_in_threaded_to_chunk(self):
+        """stype_in passed to generate_chunks must appear on every Chunk."""
+        chunks = generate_chunks(
+            self.REQ, ["AAPL"], date(2024, 1, 15), date(2024, 1, 15),
+            10, self.SCHEMA, self.DATASET, stype_in="continuous",
+        )
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].stype_in, "continuous")
+
+    def test_stype_in_default_is_raw_symbol(self):
+        """Omitting stype_in must default to 'raw_symbol' on each Chunk."""
+        chunks = self._chunks(["AAPL"], date(2024, 1, 15), date(2024, 1, 15))
+        self.assertEqual(chunks[0].stype_in, "raw_symbol")
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +414,117 @@ class TestSha256OfFile(unittest.TestCase):
         finally:
             os.unlink(n1)
             os.unlink(n2)
+
+
+# ---------------------------------------------------------------------------
+# _classify_error
+# ---------------------------------------------------------------------------
+
+class TestClassifyError(unittest.TestCase):
+
+    def test_bento_error_is_api_error(self):
+        self.assertEqual(_classify_error(db.BentoError("bad request")), "api_error")
+
+    def test_timed_out_message_is_api_error(self):
+        self.assertEqual(_classify_error(RuntimeError("timed out waiting")), "api_error")
+
+    def test_expired_message_is_api_error(self):
+        self.assertEqual(_classify_error(RuntimeError("job expired")), "api_error")
+
+    def test_failed_at_databento_is_api_error(self):
+        self.assertEqual(_classify_error(RuntimeError("failed at databento")), "api_error")
+
+    def test_cost_message_is_api_error(self):
+        self.assertEqual(_classify_error(RuntimeError("cost exceeds limit")), "api_error")
+
+    def test_no_csv_files_is_download_error(self):
+        self.assertEqual(_classify_error(RuntimeError("no csv files produced")), "download_error")
+
+    def test_checksum_mismatch_is_download_error(self):
+        self.assertEqual(_classify_error(ValueError("checksum mismatch")), "download_error")
+
+    def test_cannot_infer_date_is_parse_error(self):
+        self.assertEqual(_classify_error(ValueError("cannot infer date from filename")), "parse_error")
+
+    def test_parsing_message_is_parse_error(self):
+        self.assertEqual(_classify_error(ValueError("error while parsing csv")), "parse_error")
+
+    def test_manifest_message_is_load_error(self):
+        self.assertEqual(_classify_error(RuntimeError("failed to write manifest")), "load_error")
+
+    def test_permission_denied_is_load_error(self):
+        self.assertEqual(_classify_error(PermissionError("permission denied: /hdb")), "load_error")
+
+    def test_unknown_error_falls_back_to_api_error(self):
+        """Unrecognised exceptions fall back to api_error rather than raising."""
+        self.assertEqual(_classify_error(RuntimeError("something completely unknown")), "api_error")
+
+
+# ---------------------------------------------------------------------------
+# run_chunk — cost guard
+# ---------------------------------------------------------------------------
+
+class TestCostGuard(unittest.TestCase):
+    """
+    Verify that run_chunk marks a chunk as failed (without calling submit_job)
+    when the estimated cost exceeds MAX_COST_USD.
+    """
+
+    def _make_chunk(self):
+        return Chunk(
+            chunk_id="c_guard_001",
+            request_id="req_guard",
+            dataset="XNAS.ITCH",
+            schema="trades",
+            symbols=["AAPL"],
+            date=date(2024, 1, 15),
+        )
+
+    def test_chunk_fails_when_cost_exceeds_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp)
+            manifest_dir = staging / "manifests"
+            manifest_dir.mkdir()
+            store = JobStore(staging / "jobs")
+
+            chunk = self._make_chunk()
+            client = MagicMock()
+
+            # estimate_cost returns a value well above the $50 default limit
+            with patch("orchestrator.estimate_cost", return_value=999.0), \
+                 patch("orchestrator.submit_job") as mock_submit:
+                result = run_chunk(client, chunk, store, staging, manifest_dir)
+
+            self.assertFalse(result)
+            record = store.load("c_guard_001")
+            self.assertIsNotNone(record)
+            self.assertEqual(record.status, "failed")
+            self.assertIn("exceeds limit", record.error_msg)
+            mock_submit.assert_not_called()
+
+    def test_submit_proceeds_when_cost_is_within_limit(self):
+        """When cost is under the limit, submit_job should be called."""
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp)
+            manifest_dir = staging / "manifests"
+            manifest_dir.mkdir()
+            store = JobStore(staging / "jobs")
+
+            chunk = self._make_chunk()
+            client = MagicMock()
+
+            # estimate_cost returns a value comfortably below the $50 default
+            with patch("orchestrator.estimate_cost", return_value=1.0), \
+                 patch("orchestrator.submit_job", side_effect=RuntimeError("stop here")):
+                # submit_job raises to prevent the rest of run_chunk running,
+                # but we only care that it was called at all
+                run_chunk(client, chunk, store, staging, manifest_dir)
+
+            record = store.load("c_guard_001")
+            self.assertIsNotNone(record)
+            # status will be 'failed' due to our injected error, but that means
+            # submit was reached — the cost guard did not abort
+            self.assertNotIn("exceeds limit", record.error_msg)
 
 
 # ---------------------------------------------------------------------------

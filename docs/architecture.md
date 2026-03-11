@@ -10,85 +10,60 @@ End-to-end data flow from user request to kdb+ HDB partition.
 flowchart TD
     User(["👤 User / Cron"])
 
-    subgraph Shell["Shell Layer"]
-        direction LR
+    subgraph Shell["Shell Scripts"]
         RBS["request_backfill.sh"]
-        BSS["backfill_status.sh\nretry_failed.sh"]
+        BSS["backfill_status.sh"]
     end
 
-    subgraph Python["Python — orchestrator.py + metrics.py"]
-        direction TB
-        CHUNK["① Chunk generation<br/>1 day × 1 symbol-batch per chunk"]
-        COST["② Cost guard<br/>estimate_cost() — aborts if &gt; $50"]
-        SUBMIT["③ Submit batch job<br/>submit_job()"]
-        POLL["④ Poll until done<br/>poll_until_done()"]
-        DOWNLOAD["⑤ Download CSV<br/>download_csv()"]
-        MANIFEST["⑥ Write manifest + job record<br/>write_manifest()"]
-        CHUNK --> COST --> SUBMIT --> POLL --> DOWNLOAD --> MANIFEST
+    subgraph Python["Python — orchestrator.py"]
+        CHUNK["① Chunk request\n1 day × symbol-batch"]
+        COST["② Cost guard\nestimate_cost() — aborts if > $50"]
+        FETCH["③ Submit → poll → download\nDatabento Historical API"]
+        WRITE["④ Write manifest + job record\nstaging/metadata/"]
+        CHUNK --> COST --> FETCH --> WRITE
     end
 
-    DAPI(["☁ Databento<br/>Historical API"])
+    DAPI(["☁ Databento\nHistorical API"])
 
     subgraph Staging["Staging — staging/"]
-        direction TB
-        CSV[("chunks/‹chunk_id›/*.csv<br/>downloaded trade / OHLCV data")]
-        MAN[("metadata/manifests/*.json<br/>load instructions for q")]
-        JOBS[("metadata/jobs/*.json<br/>job store — status lifecycle")]
-        MET[("metrics/‹req›/‹chunk›.json<br/>per-stage timing")]
-        SYM[("reference/symbology_map.csv<br/>sym ↔ instrument_id ↔ exchange")]
+        CSV[("chunks/\nCSV trade & OHLCV data")]
+        MAN[("metadata/manifests/\nload instructions for q")]
+        JOBS[("metadata/jobs/\njob status lifecycle")]
+        SYM[("reference/\nsymbology_map.csv")]
     end
 
-    subgraph qLoader["q Loader — loader.q  manifest.q  quality.q"]
-        direction TB
-        PM["processManifests()<br/>manifest.q — scan, validate, dispatch"]
-        LC["loadChunk()<br/>loader.q — route by schema"]
-        LT["loadTrades()"]
-        LO["loadOhlcv()"]
-        QC["runQualityChecks()<br/>quality.q — dups · ordering · nulls"]
-        DPFT[".Q.dpft()<br/>write splayed HDB partition"]
-        UPD["updateJobRecord()<br/>updateJobRecordTimestamps()"]
-        PM --> LC
-        LC --> LT & LO
-        LT & LO --> DPFT
-        LC --> QC
-        LC --> UPD
+    subgraph qLoader["q Loader — loader.q · manifest.q · quality.q"]
+        SCAN["① processManifests()\nscan manifests — skip completed chunks"]
+        LOAD["② loadChunkBatch()\nparse CSV · merge exchanges · quality checks"]
+        DPFT["③ .Q.dpft()\nwrite splayed HDB partition"]
+        SCAN --> LOAD --> DPFT
     end
 
     subgraph HDB["kdb+ HDB — hdb/"]
-        direction LR
-        PART["YYYY.MM.DD/"]
-        TRADES["trades/<br/>splayed · sorted sym·time"]
-        OHLCV["ohlcv_1m/<br/>splayed · sorted sym·time"]
-        SYMFILE[("sym<br/>enum file")]
-        PART --> TRADES & OHLCV
+        PART["YYYY.MM.DD/\ntrades/ · ohlcv_1m/\npartitioned by date · sorted sym,time"]
     end
 
-    subgraph AdjRef["Reference Data & Adjustments"]
-        direction TB
-        REFINGEST["ref_ingest.py<br/>generate synthetic reference CSVs"]
-        REFTABLES["ref_tables.q<br/>security master · corp actions<br/>adj factors · symbology map"]
-        ADJLIB["adjlib.q<br/>applyAdj()  getAdjustedClose()<br/>backward / forward methods"]
-        REFINGEST --> REFTABLES --> ADJLIB
+    subgraph Ref["Reference Data & Adjustments"]
+        RI["ref_ingest.py\ngenerate synthetic ref CSVs"]
+        RT["ref_tables.q\nsecurity master · symbology\ncorp actions · adj factors"]
+        ADJ["adjlib.q\napplyAdj() · getAdjustedClose()"]
+        RI --> RT --> ADJ
     end
 
-    User --> Shell
-    RBS --> Python
-    BSS -.->|"reads job records"| JOBS
+    User --> RBS --> Python
     Python <-->|"submit · poll · download"| DAPI
-    DOWNLOAD -->|"staged CSV"| CSV
-    MANIFEST -->|"manifest"| MAN
-    Python -->|"job records"| JOBS
-    Python -->|"timing stub"| MET
-    Python -->|"stdin: runLoader[]"| PM
-    PM -.->|"reads"| MAN
-    PM -.->|"CSV path via manifest"| CSV
-    UPD -->|"status · timestamps"| JOBS
-    LC -->|"load timing"| MET
-    LC -->|"flush sym·instrument_id pairs"| SYM
-    DPFT -->|"splayed partition"| PART
-    DPFT -->|"enum update"| SYMFILE
-    REFTABLES -.->|"reads"| SYM
-    ADJLIB -.->|"queries ohlcv_1m / trades"| HDB
+    FETCH -->|"CSV"| CSV
+    WRITE -->|"manifest"| MAN
+    WRITE -->|"job record"| JOBS
+    Python -->|"stdin: runLoader[]"| SCAN
+    SCAN -.->|"reads"| MAN
+    LOAD -.->|"reads"| CSV
+    LOAD -->|"update status + timestamps"| JOBS
+    LOAD -->|"sym ↔ instrument_id pairs"| SYM
+    DPFT --> PART
+    BSS -.->|"reads"| JOBS
+    RT -.->|"reads"| SYM
+    ADJ -.->|"queries"| HDB
 ```
 
 ---
@@ -108,10 +83,10 @@ All communication between Python and q goes through files on disk. Python never 
 
 | Path | Written by | Read by |
 |---|---|---|
-| `chunks/‹id›/*.csv` | `download_csv()` | `loadTrades()` / `loadOhlcv()` |
+| `chunks/<id>/*.csv` | `download_csv()` | `loadChunkBatch()` |
 | `metadata/manifests/*.json` | `write_manifest()` | `processManifests()` |
 | `metadata/jobs/*.json` | `orchestrator.py` | `updateJobRecord()`, status scripts |
-| `metrics/‹req›/‹chunk›.json` | `metrics.py` (stub) | `updateMetrics()` (q fills timing) |
+| `metrics/<req>/<chunk>.json` | `metrics.py` (stub) | `updateMetrics()` (q fills timing) |
 | `reference/symbology_map.csv` | `flushSymbologyMap()` | `ref_tables.q` → `resolveSymbol()` |
 
 ### q Loader

@@ -214,6 +214,81 @@ class TestWriteSummary(unittest.TestCase):
                 self.assertIn(stage, s["stage_totals"],
                               msg=f"missing stage: {stage}")
 
+    def test_failure_breakdown_empty_when_no_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._save_chunk(tmp, "c001", "r001")
+            path = write_summary(Path(tmp), "r001")
+            with open(path) as f:
+                s = json.load(f)
+            self.assertEqual(s["failure_breakdown"], {})
+            self.assertEqual(s["failed_chunk_count"], 0)
+
+    def test_failure_breakdown_counts_by_type(self):
+        """Two api_errors and one download_error → correct counts in breakdown."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for chunk_id, ft in [("c001", "api_error"),
+                                  ("c002", "api_error"),
+                                  ("c003", "download_error")]:
+                m = ChunkMetrics(chunk_id=chunk_id, request_id="r001",
+                                 failure_type=ft)
+                m.save(Path(tmp))
+            path = write_summary(Path(tmp), "r001")
+            with open(path) as f:
+                s = json.load(f)
+            self.assertEqual(s["failure_breakdown"]["api_error"], 2)
+            self.assertEqual(s["failure_breakdown"]["download_error"], 1)
+            self.assertEqual(s["failed_chunk_count"], 2)
+
+    def test_total_rows_loaded_is_sum_across_chunks(self):
+        """rows_loaded on each ChunkMetrics should sum into total_rows_loaded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for chunk_id, rl in [("c001", 1000), ("c002", 400)]:
+                m = ChunkMetrics(chunk_id=chunk_id, request_id="r001",
+                                 row_count=1000, rows_loaded=rl)
+                m.save(Path(tmp))
+            path = write_summary(Path(tmp), "r001")
+            with open(path) as f:
+                s = json.load(f)
+            self.assertEqual(s["total_rows_loaded"], 1400)
+
+    def test_total_rows_loaded_zero_when_not_set(self):
+        """Chunks with no rows_loaded field (e.g. loader not yet run) sum to 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._save_chunk(tmp, "c001", "r001", row_count=500)
+            path = write_summary(Path(tmp), "r001")
+            with open(path) as f:
+                s = json.load(f)
+            self.assertEqual(s["total_rows_loaded"], 0)
+
+    def test_rows_loaded_less_than_rows_downloaded_on_idempotent_skip(self):
+        """rows_loaded=0 when chunk was skipped due to idempotency;
+        rows downloaded still reflects the CSV count."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = ChunkMetrics(chunk_id="c001", request_id="r001",
+                             row_count=1000, rows_loaded=0)
+            m.save(Path(tmp))
+            path = write_summary(Path(tmp), "r001")
+            with open(path) as f:
+                s = json.load(f)
+            self.assertEqual(s["total_rows"], 1000)
+            self.assertEqual(s["total_rows_loaded"], 0)
+
+    def test_failure_breakdown_ignores_successful_chunks(self):
+        """Chunks with no failure_type must not appear in the breakdown."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # one failure, one success (empty failure_type)
+            m_fail = ChunkMetrics(chunk_id="c001", request_id="r001",
+                                  failure_type="parse_error")
+            m_ok = ChunkMetrics(chunk_id="c002", request_id="r001",
+                                failure_type="")
+            m_fail.save(Path(tmp))
+            m_ok.save(Path(tmp))
+            path = write_summary(Path(tmp), "r001")
+            with open(path) as f:
+                s = json.load(f)
+            self.assertNotIn("", s["failure_breakdown"])
+            self.assertEqual(s["failed_chunk_count"], 1)
+
 
 # ---------------------------------------------------------------------------
 # load_chunk_metrics

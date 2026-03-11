@@ -24,7 +24,8 @@ class ChunkMetrics:
     schema: str = ""
     date: str = ""
     symbols: list = field(default_factory=list)
-    row_count: int = 0
+    row_count: int = 0       # rows in the downloaded CSV (set by Python after download)
+    rows_loaded: int = 0     # rows actually written to HDB (set by q loader after .Q.dpft)
     file_bytes: int = 0
     failure_type: str = ""    # api_error | download_error | parse_error | load_error | quality_error
 
@@ -123,6 +124,7 @@ def write_summary(staging_dir: Path, request_id: str,
         return None
 
     total_rows = sum(c.get("row_count", 0) for c in chunks)
+    total_rows_loaded = sum(c.get("rows_loaded", 0) for c in chunks)
     total_bytes = sum(c.get("file_bytes", 0) for c in chunks)
     sum_chunk_s = sum(c.get("total_s", 0.0) for c in chunks)
 
@@ -136,6 +138,7 @@ def write_summary(staging_dir: Path, request_id: str,
         "request_id": request_id,
         "chunk_count": len(chunks),
         "total_rows": total_rows,
+        "total_rows_loaded": total_rows_loaded,
         "total_bytes": total_bytes,
         # wall_s  — real elapsed time (parallel workers overlap, so wall_s ≤ sum_chunk_s)
         # sum_chunk_s — sum of all individual chunk durations (useful for CPU accounting)
@@ -183,13 +186,14 @@ def print_metrics(staging_dir: Path, request_id: str | None = None) -> None:
             continue
 
         print(f"\nMetrics — {req_dir.name} ({len(chunks)} chunk(s)):")
-        print(f"  {'chunk_id':<50} {'rows':>8} {'total_s':>8} "
+        print(f"  {'chunk_id':<50} {'dl_rows':>8} {'ld_rows':>8} {'total_s':>8} "
               f"{'submit_s':>9} {'poll_s':>8} {'dl_s':>7} {'load_s':>8}")
-        print(f"  {'-'*108}")
+        print(f"  {'-'*117}")
 
         for c in chunks:
             print(f"  {c.get('chunk_id', ''):<50} "
                   f"{c.get('row_count', 0):>8} "
+                  f"{c.get('rows_loaded', 0):>8} "
                   f"{c.get('total_s', 0.0):>8.1f} "
                   f"{c.get('submit_s', 0.0):>9.1f} "
                   f"{c.get('poll_s', 0.0):>8.1f} "
@@ -203,7 +207,8 @@ def print_metrics(staging_dir: Path, request_id: str | None = None) -> None:
             mb = s.get("total_bytes", 0) / 1024 / 1024
             wall = s.get("wall_s")
             wall_str = f"{wall:.1f}s wall" if wall is not None else "wall_s unknown"
-            print(f"\n  Summary: {s.get('total_rows', 0):,} rows, "
+            print(f"\n  Summary: {s.get('total_rows', 0):,} downloaded, "
+                  f"{s.get('total_rows_loaded', 0):,} loaded, "
                   f"{mb:.1f} MB, {wall_str}, "
                   f"{s.get('sum_chunk_s', 0.0):.1f}s total across chunks")
             if s.get("failure_breakdown"):

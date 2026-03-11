@@ -124,41 +124,46 @@ processManifests:{[stagingPath]
 
     .lg.o[`manifest;"processing ",string[count manifests]," manifest(s)"];
 
-    // Derive jobs dir: staging/metadata/manifests → staging/metadata/jobs
     jobsDir:hsym`$ssr[1_string hsym`$string stagingPath;"manifests";"jobs"];
 
-    results:{[jobsDir;mPath]
-        .lg.o[`manifest;"reading ",string mPath];
+    parsedRaw:@[readManifest;;{[e] 0b}] each manifests;
+    parsedValidIdx:where not parsedRaw ~\: 0b;
+    parsed:parsedRaw parsedValidIdx;
+    validPaths:manifests parsedValidIdx;
 
-        // readManifest can signal — catch errors, log, and return 0 rows for this chunk
-        m:@[readManifest; mPath; {[e] .lg.o[`manifest;"read error: ",e]; 0b}];
-        if[m~0b; :0j];
+    if[0=count parsed; :0j];
 
-        // Check job store status before doing any work
-        status:readJobStatus[jobsDir; m`chunk_id];
-        if[status=`verified;
-            .lg.o[`manifest;"skipping verified chunk: ",string m`chunk_id];
-            // Archive to keep the active manifest dir lean.
-            // Verified manifests accumulate over many runs and are scanned
-            // (and skipped) on every invocation — archiving them to a
-            // subdirectory removes them from the hot path entirely.
-            archDir:ssr[1_string jobsDir;"jobs";"manifests/archive"];
-            @[system;"mkdir -p ",archDir;::];
-            @[system;"mv ",1_string[mPath]," ",archDir,"/";::];
-            :0j
-        ];
-        if[status=`loading;
-            .lg.o[`manifest;"WARNING: retrying chunk stuck in loading state: ",
-                  string m`chunk_id]
-        ];
+    // validate
+    validatedIdx:where @[{validateManifest x; 1b};;{[e] 0b}] each parsed;
+    validParsed:parsed validatedIdx;
+    validPaths:validPaths validatedIdx;
 
-        valid:@[validateManifest; m; {[e] .lg.o[`manifest;"validation error: ",e]; 0b}];
-        if[valid~0b; :0j];
+    if[0=count validParsed; :0j];
 
-        // loadChunk is defined in loader.q which loads this file
-        n:@[loadChunk; m; {[e] .lg.o[`manifest;"load error: ",e]; 0j}];
-        n
-    }[jobsDir;] each manifests;
+    // Status check
+    statuses:readJobStatus[jobsDir;] each validParsed`chunk_id;
+    
+    // Archive verified
+    verifiedIdx:where statuses=`verified;
+    toArchive:validPaths verifiedIdx;
+    if[count toArchive;
+        archDir:ssr[1_string jobsDir;"jobs";"manifests/archive"];
+        @[system;"mkdir -p ",archDir;::];
+        {[archDir;mPath] @[system;"mv ",1_string[mPath]," ",archDir,"/";::]} [archDir;] each toArchive;
+        .lg.o[`manifest;"archived ",string[count toArchive]," verified manifests"];
+    ];
+
+    // Remaining to process
+    processIdx:where not statuses=`verified;
+    if[0=count processIdx; :0j];
+
+    toProcess:validParsed processIdx;
+
+    // Grouping by date and schema
+    grouped:group toProcess{x[`date],x[`schema]};
+    batches:toProcess value grouped;
+
+    results:@[loadChunkBatch;;{[e] .lg.o[`manifest;"load batch error: ",e]; 0j}] each batches;
 
     total:sum results;
     .lg.o[`manifest;"total rows loaded: ",string total];
@@ -170,6 +175,11 @@ processManifests:{[stagingPath]
 //
 // Parameters:
 //   jobsDir - path to staging/metadata/jobs/ (symbol or string)
+//
+// Performance: reads and parses every .json file in the directory on each
+// call — O(n) where n = total number of chunk records in the job store.
+// For large bacfkills (thousands of chunks) callers should cache the result
+// rather than calling this on every poll tick.
 //
 // Returns a table with one row per job record, columns:
 //   request_id chunk_id dataset schema date status retries row_count

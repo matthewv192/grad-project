@@ -54,11 +54,21 @@ csvLines:(
 \l code/backfill/loader.q
 
 // ---------------------------------------------------------------------------
-// Test 1: loadTrades writes partition and returns correct row count
+// Helper: build a single-row manifest table for loadChunkBatch calls.
+// loadTrades/loadOhlcv were deprecated in favour of loadChunkBatch which
+// takes a table of manifests matching the JSON schema produced by Python.
+// ---------------------------------------------------------------------------
+mkM:{[cid;sch;dt;exch;fp;rc]
+    ([] chunk_id:enlist cid; request_id:enlist`r_test;
+        schema:enlist sch; date:enlist dt; exchange:enlist exch;
+        file_path:enlist hsym`$fp; row_count:enlist rc)};
+
+// ---------------------------------------------------------------------------
+// Test 1: loadChunkBatch writes partition and returns correct row count
 // ---------------------------------------------------------------------------
 
-rowCount:loadTrades[hsym`$testCSV; 2024.01.15; `$"XNAS.ITCH"];
-assertEq["loadTrades row count"; rowCount; 3j];
+rowCount:loadChunkBatch mkM[`c001;`trades;2024.01.15;`$"XNAS.ITCH";testCSV;3j];
+assertEq["loadChunkBatch row count"; rowCount; 3j];
 
 // ---------------------------------------------------------------------------
 // Test 2: Partition directory was created
@@ -70,8 +80,8 @@ assertEq["partition dir exists"; `2024.01.15 in key HDB_DIR; 1b];
 // Test 3: Idempotency — loading the same file twice should not duplicate rows
 // ---------------------------------------------------------------------------
 
-rowCount2:loadTrades[hsym`$testCSV; 2024.01.15; `$"XNAS.ITCH"];
-assertEq["idempotent row count"; rowCount2; 3j];
+rowCount2:loadChunkBatch mkM[`c001;`trades;2024.01.15;`$"XNAS.ITCH";testCSV;3j];
+assertEq["idempotent row count"; rowCount2; 0j];
 
 // Load the HDB and verify row count is still 3 (not 6)
 // system "l path" loads an HDB directory into the q session
@@ -129,14 +139,14 @@ xnysTradesCSV:"/tmp/grad_test_xnys_trades.csv";
 // Test 6: loadTrades on empty CSV returns 0 without error
 // ---------------------------------------------------------------------------
 
-emptyTradesCount:loadTrades[hsym`$emptyTradesCSV; 2024.01.20; `$"XNAS.ITCH"];
+emptyTradesCount:loadChunkBatch mkM[`c_emp_t;`trades;2024.01.20;`$"XNAS.ITCH";emptyTradesCSV;0j];
 assertEq["empty trades CSV returns 0"; emptyTradesCount; 0j];
 
 // ---------------------------------------------------------------------------
 // Test 7: loadOhlcv on empty CSV returns 0 without error
 // ---------------------------------------------------------------------------
 
-emptyOhlcvCount:loadOhlcv[hsym`$emptyOhlcvCSV; 2024.01.20; `$"XNAS.ITCH"];
+emptyOhlcvCount:loadChunkBatch mkM[`c_emp_o;`ohlcv_1m;2024.01.20;`$"XNAS.ITCH";emptyOhlcvCSV;0j];
 assertEq["empty ohlcv CSV returns 0"; emptyOhlcvCount; 0j];
 
 // ---------------------------------------------------------------------------
@@ -156,7 +166,7 @@ assertEq["readOhlcvCSV instrument_id type"; type rawOhlcv`instrument_id; 7h];
 // Test 9: loadOhlcv writes partition and returns correct row count
 // ---------------------------------------------------------------------------
 
-ohlcvCount:loadOhlcv[hsym`$testOhlcvCSV; 2024.01.16; `$"XNAS.ITCH"];
+ohlcvCount:loadChunkBatch mkM[`c_ohlcv;`ohlcv_1m;2024.01.16;`$"XNAS.ITCH";testOhlcvCSV;3j];
 assertEq["loadOhlcv row count";        ohlcvCount;                       3j];
 assertEq["ohlcv partition dir exists"; `2024.01.16 in key HDB_DIR;       1b];
 assertEq["ohlcv table dir exists";     `ohlcv_1m in key ` sv HDB_DIR,`2024.01.16; 1b];
@@ -165,8 +175,8 @@ assertEq["ohlcv table dir exists";     `ohlcv_1m in key ` sv HDB_DIR,`2024.01.16
 // Test 10: loadOhlcv is idempotent — loading same file twice keeps row count at 3
 // ---------------------------------------------------------------------------
 
-ohlcvCount2:loadOhlcv[hsym`$testOhlcvCSV; 2024.01.16; `$"XNAS.ITCH"];
-assertEq["loadOhlcv idempotent row count"; ohlcvCount2; 3j];
+ohlcvCount2:loadChunkBatch mkM[`c_ohlcv;`ohlcv_1m;2024.01.16;`$"XNAS.ITCH";testOhlcvCSV;3j];
+assertEq["loadOhlcv idempotent row count"; ohlcvCount2; 0j];
 
 // ---------------------------------------------------------------------------
 // Test 11: Multi-exchange merge — XNAS.ITCH and XNYS.PILLAR in same partition date
@@ -180,7 +190,7 @@ assertEq["loadOhlcv idempotent row count"; ohlcvCount2; 3j];
 // any table with a `date` column as partitioned, causing 'dup date.
 // ---------------------------------------------------------------------------
 
-xnysCount:loadTrades[hsym`$xnysTradesCSV; 2024.01.15; `$"XNYS.PILLAR"];
+xnysCount:loadChunkBatch mkM[`c_xnys;`trades;2024.01.15;`$"XNYS.PILLAR";xnysTradesCSV;1j];
 assertEq["XNYS.PILLAR load row count"; xnysCount; 1j];
 
 // Single HDB reload covers both Test 10 (ohlcv idempotency) and Test 11 (merge)

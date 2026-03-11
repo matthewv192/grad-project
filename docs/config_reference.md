@@ -93,6 +93,7 @@ Python logging uses JSON format on stdout. Redirect to `logs/` if needed:
 | `--workers` | No | Parallel chunk workers (default: `4`). Each worker runs the full submit→poll→download pipeline for one chunk concurrently. |
 | `--request-id` | No | Override auto-generated ID. If a record already exists with different parameters the run aborts; matching parameters are treated as an idempotent resume. |
 | `--retry-failed` | No | Only retry `failed` chunks from the job store |
+| `--status` | No | Print a summary of all job statuses and exit; combine with `--request-id` to filter to one request |
 | `--dry-run` | No | Estimate cost and print chunk plan; do not submit or download |
 | `--download-only` | No | Download and stage only; do not invoke the q loader |
 | `--load-only` | No | Skip API calls; run the q loader on existing staged manifests |
@@ -117,5 +118,49 @@ Each downloaded chunk produces a manifest file in `staging/metadata/manifests/`.
 | `file_path` | string | Absolute path to the staged CSV |
 | `row_count` | integer | Expected row count (used for verification) |
 | `checksum` | string | SHA-256 of the CSV for integrity checking |
-| `min_ts` / `max_ts` | string | Timestamp range (empty if not populated) |
+| `min_ts` / `max_ts` | string | Actual timestamp range written to the HDB partition (populated by q loader after `.Q.dpft`; empty until then) |
 | `created_at` | string | ISO 8601 creation timestamp |
+
+---
+
+## Job Store JSON Schema
+
+Each chunk has a persistent record in `staging/metadata/jobs/`. Updated at every status transition.
+
+| Key | Type | Description |
+|---|---|---|
+| `chunk_id` | string | Unique chunk identifier |
+| `request_id` | string | Parent request identifier |
+| `databento_job_id` | string | Databento batch job ID (set after submit) |
+| `dataset` | string | Databento dataset, e.g. `XNAS.ITCH` |
+| `schema` | string | `trades` or `ohlcv-1m` |
+| `date` | string | Partition date `YYYY-MM-DD` |
+| `symbols` | array | Ticker list for this chunk |
+| `status` | string | `pending` → `submitted` → `running` → `downloaded` → `loaded` → `verified` (or `failed`) |
+| `retries` | integer | Number of failed attempts so far |
+| `error_msg` | string | Last failure message (empty on success) |
+| `failure_type` | string | Failure category: `api_error` · `download_error` · `parse_error` · `load_error` · `quality_error` |
+| `file_path` | string | Primary CSV path |
+| `file_paths` | array | All CSV paths (multi-file jobs) |
+| `checksum` | string | SHA-256 of primary CSV |
+| `row_count` | integer | Data row count from CSV |
+| `min_ts` / `max_ts` | string | Actual timestamp range written to HDB (set by q loader) |
+| `created_at` / `updated_at` | string | ISO 8601 timestamps |
+
+### Querying the job store from q
+
+```q
+\l code/backfill/manifest.q
+jobsDir: hsym `$ getenv[`STAGING_DIR], "/metadata/jobs"
+showJobsTable jobsDir
+```
+
+Returns a typed kdb+ table with one row per job record, suitable for filtering and aggregation:
+
+```q
+/ All failed chunks with their failure category
+select chunk_id, failure_type, error_msg from showJobsTable[jobsDir] where status=`failed
+
+/ Count by status
+select count i by status from showJobsTable[jobsDir]
+```

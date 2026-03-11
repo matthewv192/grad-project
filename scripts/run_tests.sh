@@ -78,8 +78,11 @@ run_q_test "quality"     tests/test_quality.q
 run_q_test "symbology"   tests/test_symbology.q
 run_q_test "ref_tables"  tests/test_ref_tables.q
 run_q_test "adj"         tests/test_adj.q
-# integration test only runs when KDBHDB points to a populated HDB
-if [ -n "${KDBHDB:-}" ] && [ -d "${KDBHDB}" ] && [ "$(ls -A "${KDBHDB}" 2>/dev/null)" ]; then
+# integration test runs whenever KDBHDB points to an existing directory.
+# Date and sym are auto-discovered from the HDB; the test skips gracefully
+# if no trades data is found.  Override with INTEGRATION_TEST_DATE /
+# INTEGRATION_TEST_SYM to target a specific partition.
+if [ -n "${KDBHDB:-}" ] && [ -d "${KDBHDB}" ]; then
     run_q_test "integration" tests/test_integration.q
 else
     printf "  %-45s" "integration"

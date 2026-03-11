@@ -51,12 +51,40 @@ from metrics import ChunkMetrics, write_summary, print_metrics
 # Logging
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
+_LOG_FMT = logging.Formatter(
+    '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
     datefmt="%Y-%m-%dT%H:%M:%S",
-    stream=sys.stdout,
 )
+
+
+def _configure_logging() -> None:
+    """Attach the stdout handler. Called once at module import.
+
+    Guarded against re-import: if the root logger already has handlers
+    (e.g. in tests that import this module multiple times) we do nothing,
+    which prevents duplicate log lines.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_LOG_FMT)
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+
+
+def _add_file_logging(log_dir: Path, request_id: str) -> None:
+    """Add a rotating file handler for a specific request. Called from main()."""
+    from logging.handlers import RotatingFileHandler
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fh = RotatingFileHandler(
+        log_dir / f"{request_id}.log", maxBytes=10_000_000, backupCount=5,
+    )
+    fh.setFormatter(_LOG_FMT)
+    logging.getLogger().addHandler(fh)
+
+
+_configure_logging()
 log = logging.getLogger("orchestrator")
 
 
@@ -298,12 +326,16 @@ def poll_until_done(client: db.Historical, job_id: str) -> dict:
         # cannot cause us to loop past the timeout indefinitely.
         if time.monotonic() > deadline:
             raise RuntimeError(f"Timed out waiting for job {job_id}")
-        # The Databento SDK's JobState enum only recognises 'queued',
-        # 'processing', 'done', 'expired' — passing 'failed' causes a
-        # validation error when the SDK parses the response.  Instead we
-        # catch the SDK's validation exception here: if it fires it means
-        # the API returned a job in an unexpected state (almost certainly
-        # 'failed'), which we surface as a clear runtime error.
+        # NOTE: The Databento batch SDK does not expose a single-job lookup
+        # endpoint, so we must list ALL jobs in the given states and then
+        # filter by job_id.  This is O(total jobs in your account) — for
+        # accounts with many historical jobs the response can be large.
+        # If this becomes a bottleneck, consider caching the full job list
+        # across concurrent poll_until_done calls for the same request.
+        #
+        # The SDK's JobState enum only recognises 'queued', 'processing',
+        # 'done', 'expired' — passing 'failed' causes a validation error.
+        # We catch that case below and surface it as a clear RuntimeError.
         try:
             jobs = client.batch.list_jobs(
                 states=["queued", "processing", "done"]
@@ -388,10 +420,20 @@ def download_csv(client: db.Historical, job_id: str,
 
 def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
                    symbols: list[str], csv_path: Path,
-                   manifest_dir: Path, dataset: str = DEFAULT_DATASET) -> dict:
+                   manifest_dir: Path, dataset: str = DEFAULT_DATASET,
+                   row_count: int | None = None,
+                   checksum: str | None = None) -> dict:
+    """Write a manifest JSON for one CSV file, atomically (tmp + rename).
+
+    row_count and checksum may be passed in by the caller to avoid re-scanning
+    a file that was already hashed/counted during download.  If omitted, they
+    are computed here (used on the resume path where the values weren't cached).
+    """
     manifest_dir.mkdir(parents=True, exist_ok=True)
-    row_count = count_csv_rows(csv_path)
-    checksum = sha256_of_file(csv_path)
+    if row_count is None:
+        row_count = count_csv_rows(csv_path)
+    if checksum is None:
+        checksum = sha256_of_file(csv_path)
     manifest = {
         "request_id": request_id,
         "chunk_id": chunk_id,
@@ -408,8 +450,10 @@ def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     manifest_path = manifest_dir / f"{chunk_id}.json"
-    with open(manifest_path, "w") as f:
+    tmp = manifest_path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(manifest, f, indent=2)
+    tmp.rename(manifest_path)
     log.info(_j(f"Manifest: {manifest_path.name} rows={row_count}"))
     return manifest
 
@@ -424,8 +468,7 @@ def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
     torq_home = os.environ.get("TORQHOME", str(package_home / "../TorQ"))
 
     if not loader_script.exists():
-        log.error(_j(f"Loader script not found: {loader_script}"))
-        return
+        raise FileNotFoundError(f"Loader script not found: {loader_script}")
 
     # Acquire an exclusive process-level lock before invoking the q loader.
     # This prevents concurrent orchestrator processes (e.g. parallel chunk runs
@@ -643,12 +686,17 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         metrics.file_bytes = csv_path.stat().st_size
 
         # ---- Write manifest (one per CSV) ----
+        # Pass the already-computed row_count/checksum for the primary CSV to
+        # avoid re-reading it here.  Additional parts (part_idx > 0) are scanned
+        # fresh since their values were not computed during the download phase.
         for part_idx, part_path in enumerate(csv_paths):
             part_chunk_id = (chunk.chunk_id if part_idx == 0
                              else f"{chunk.chunk_id}_part{part_idx + 1}")
             write_manifest(chunk.request_id, part_chunk_id, job_id,
                            chunk.schema, chunk.symbols, part_path, manifest_dir,
-                           dataset=chunk.dataset)
+                           dataset=chunk.dataset,
+                           row_count=record.row_count if part_idx == 0 else None,
+                           checksum=record.checksum if part_idx == 0 else None)
 
         record.status = "loaded"
         job_store.save(record)
@@ -898,6 +946,8 @@ def main(argv=None):
     request_id = (args.request_id
                   or f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
                      f"_{uuid.uuid4().hex[:6]}")
+
+    _add_file_logging(PACKAGE_HOME / "logs", request_id)
 
     # Detect a --request-id that collides with an existing run (different
     # symbols/date range → silent corruption; same range → idempotent is fine).

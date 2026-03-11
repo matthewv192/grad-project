@@ -89,7 +89,7 @@ This prints a cost estimate and chunk plan without submitting any Databento jobs
     --schema ohlcv-1m
 ```
 
-Downloaded CSVs land in `staging/<chunk_id>/`. Manifests are written to `staging/metadata/manifests/`. The q loader is invoked automatically after download.
+Downloaded CSVs are staged in `staging/<chunk_id>/` (one directory per chunk). Manifests are written to `staging/metadata/manifests/`. The q loader is invoked automatically to write data into the HDB.
 
 ---
 
@@ -134,16 +134,23 @@ select from ohlcv_1m where date=2024.01.17, sym=`MSFT, exchange=`XNAS.ITCH
 
 ```bash
 cd ~/grad-project
-q tests/test_schema.q
-q tests/test_manifest.q
-q tests/test_loader.q
-q tests/test_symbology.q
-q tests/test_quality.q
-q tests/test_ref_tables.q
-q tests/test_adj.q
+./scripts/run_tests.sh
 ```
 
-All seven tests exit 0 on success. None require a Databento API key or a loaded HDB.
+This runs 8 q tests and 2 Python tests. The integration test is skipped by default (no KDBHDB set). All other tests exit 0 on success and require no API key or loaded HDB.
+
+To run an individual test in isolation:
+
+```bash
+q tests/test_loader.q
+python3 -m pytest tests/test_orchestrator.py -v
+```
+
+The integration test is skipped unless `KDBHDB` points to a populated HDB. When enabled it auto-discovers the most recent partition date and first available sym:
+
+```bash
+KDBHDB=/path/to/hdb ./scripts/run_tests.sh
+```
 
 ---
 

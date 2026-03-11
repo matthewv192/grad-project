@@ -30,8 +30,6 @@ assertEq["trades types";
     {exec t from meta x} trades;
     "dspjsfjssj"];
 
-assertEq["trades col count"; count cols trades; 10];
-
 // ---------------------------------------------------------------------------
 // ohlcv_1m
 // ---------------------------------------------------------------------------
@@ -45,8 +43,6 @@ assertEq["ohlcv_1m types";
     {exec t from meta x} ohlcv_1m;
     "dspsjffffj"];
 
-assertEq["ohlcv_1m col count"; count cols ohlcv_1m; 10];
-
 // ---------------------------------------------------------------------------
 // backfill_jobs
 // ---------------------------------------------------------------------------
@@ -54,7 +50,6 @@ assertEq["ohlcv_1m col count"; count cols ohlcv_1m; 10];
 expectedJobCols:`request_id`chunk_id`databento_job_id`schema`symbols`start_date`end_date`status`retries`error_msg`file_path`file_paths`checksum`row_count`min_ts`max_ts`created_at`updated_at;
 
 assertEq["backfill_jobs cols"; cols backfill_jobs; expectedJobCols];
-assertEq["backfill_jobs col count"; count cols backfill_jobs; 18];
 
 // ---------------------------------------------------------------------------
 // Reference tables

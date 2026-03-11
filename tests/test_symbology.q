@@ -84,12 +84,13 @@ setenv[`KDBHDB; tmpStaging,"/hdb"];
 
 \l code/backfill/loader.q
 
-// Build a minimal trades table
+// Build a minimal trades table (exchange column required by updateSymbologyMap)
 rawData:([]
     date:2#2024.06.03;
     sym:`AAPL`MSFT;
     time:2024.06.03D09:30:00.000000000 2024.06.03D09:31:00.000000000;
     instrument_id:1001 1002j;
+    exchange:2#`$"XNAS.ITCH";
     price:185.5 374.2f;
     size:100 50j;
     side:`A`B;
@@ -99,7 +100,7 @@ rawData:([]
 
 // updateSymbologyMap now accumulates in .loader.symPending (no disk write).
 // flushSymbologyMap merges the accumulator with the on-disk CSV and writes once.
-updateSymbologyMap[rawData; 2024.06.03; `$"XNAS.ITCH"];
+updateSymbologyMap[rawData; 2024.06.03];
 flushSymbologyMap[];
 
 // Verify the CSV was created
@@ -113,7 +114,7 @@ assertEq["AAPL in symbology map"; `AAPL in written`sym; 1b];
 assertEq["MSFT in symbology map"; `MSFT in written`sym; 1b];
 
 // Verify idempotency: accumulating same data and flushing again should not add rows
-updateSymbologyMap[rawData; 2024.06.03; `$"XNAS.ITCH"];
+updateSymbologyMap[rawData; 2024.06.03];
 flushSymbologyMap[];
 written2:("SJSDD";enlist csv) 0: mapPath;
 assertEq["idempotent: still 2 rows after second call"; count written2; 2j];
@@ -124,13 +125,14 @@ newData:([]
     sym:enlist `TSLA;
     time:enlist 2024.06.04D09:30:00.000000000;
     instrument_id:enlist 1003j;
+    exchange:enlist`$"XNAS.ITCH";
     price:enlist 250.0f;
     size:enlist 75j;
     side:enlist `A;
     conditions:enlist `128;
     sequence:enlist 5j
  );
-updateSymbologyMap[newData; 2024.06.04; `$"XNAS.ITCH"];
+updateSymbologyMap[newData; 2024.06.04];
 flushSymbologyMap[];
 written3:("SJSDD";enlist csv) 0: mapPath;
 assertEq["new sym TSLA added"; count written3; 3j];
