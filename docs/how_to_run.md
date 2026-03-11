@@ -239,24 +239,28 @@ After loading data from multiple exchanges the HDB looks like:
 hdb/
 ├── 2024.01.17/
 │   └── ohlcv_1m/           ← splayed table with rows from all exchanges
-│       ├── sym              ← enumerated symbol (parted column)
+│       ├── sym              ← enumerated symbol (parted column, p# attribute)
 │       ├── time
-│       ├── exchange         ← identifies source (XNAS.ITCH, XNYS.PILLAR, etc.)
-│       ├── instrument_id
+│       ├── exchange         ← identifies source (XNAS.ITCH, XNYS.PILLAR, etc.; g# attribute)
 │       ├── open
 │       ├── high
 │       ├── low
 │       ├── close
 │       ├── volume
+│       ├── instrument_id
 │       └── date
 ├── 2024.06.03/
 │   └── trades/             ← splayed table
-│       ├── sym
+│       ├── sym              ← p# attribute
 │       ├── time
-│       ├── exchange
+│       ├── exchange         ← g# attribute
 │       ├── price
 │       ├── size
-│       └── ...
+│       ├── side
+│       ├── conditions
+│       ├── sequence
+│       ├── instrument_id
+│       └── date
 └── sym                     ← symbol enumeration file (shared across all partitions)
 ```
 
