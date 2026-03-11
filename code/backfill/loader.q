@@ -405,6 +405,13 @@ loadChunkBatch:{[manifests]
       {[lockDir;e] releaseWriteLock lockDir; 'e}[lockDir;]];
     releaseWriteLock lockDir;
 
+    // Apply g# (grouped) attribute to the exchange column so that exchange-filtered
+    // queries use a dictionary lookup rather than a linear scan.  Done after
+    // .Q.dpft completes because .Q.dpft only attributes the parted column (sym).
+    exchangeFile:` sv partDateDir,schema,`exchange;
+    @[exchangeFile set; `g#get exchangeFile;
+      {[e] .lg.o[`loader;"g# on exchange skipped: ",e]}];
+
     loadNs:(`long$.z.p-t0);
     timePath:` sv partDateDir,schema,`time;
     times:(); if[timePath in key timePath; times:get timePath];
