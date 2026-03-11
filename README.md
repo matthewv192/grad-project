@@ -66,9 +66,11 @@ grad-project/
 ├── schema/
 │   └── schema.q            # All table schemas (trades, ohlcv_1m, ref_*, jobs)
 ├── scripts/
+│   ├── setup_python.sh     # Create venv and install Python dependencies
 │   ├── request_backfill.sh # Submit a new backfill request
 │   ├── backfill_status.sh  # Show job progress
-│   └── retry_failed.sh     # Re-queue failed chunks
+│   ├── retry_failed.sh     # Re-queue failed chunks
+│   └── run_tests.sh        # Run the full test suite
 ├── tests/
 │   ├── test_schema.q
 │   ├── test_manifest.q

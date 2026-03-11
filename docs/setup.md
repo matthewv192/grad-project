@@ -32,8 +32,16 @@ Expected layout:
 
 ## 2. Set up Python environment
 
+Run the setup script, which creates the virtual environment and installs all dependencies in one step:
+
 ```bash
 cd ~/grad-project
+./scripts/setup_python.sh
+```
+
+Or manually:
+
+```bash
 python3 -m venv ../venv
 source ../venv/bin/activate
 pip install -e .
