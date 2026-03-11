@@ -6,65 +6,56 @@ End-to-end data flow from user request to kdb+ HDB partition.
 
 ## Pipeline Overview
 
+### High-Level Flow
+```mermaid
+flowchart LR
+    User[👤 User/Cron] --> Shell[Shell Scripts]
+    Shell --> Python[Python Orchestrator]
+    Python <--> API[☁ Databento API]
+    Python --> Stage[(Staging)]
+    Stage --> qLoad[q Loader]
+    qLoad --> HDB[(HDB)]
+```
+
+### Detailed Component View
+
+**1. Request Orchestration (Python)**
 ```mermaid
 flowchart TD
-    User(["👤 User / Cron"])
-
-    subgraph Shell["Shell Scripts"]
-        RBS["request_backfill.sh"]
-        BSS["backfill_status.sh"]
-    end
-
-    subgraph Python["Python — orchestrator.py"]
-        CHUNK["① Chunk request\n1 day × symbol-batch"]
-        COST["② Cost guard\nestimate_cost() — aborts if > $50"]
-        FETCH["③ Submit → poll → download\nDatabento Historical API"]
-        WRITE["④ Write manifest + job record\nstaging/metadata/"]
-        CHUNK --> COST --> FETCH --> WRITE
-    end
-
-    DAPI(["☁ Databento\nHistorical API"])
-
-    subgraph Staging["Staging — staging/"]
-        CSV[("chunks/\nCSV trade & OHLCV data")]
-        MAN[("metadata/manifests/\nload instructions for q")]
-        JOBS[("metadata/jobs/\njob status lifecycle")]
-        SYM[("reference/\nsymbology_map.csv")]
-    end
-
-    subgraph qLoader["q Loader — loader.q · manifest.q · quality.q"]
-        SCAN["① processManifests()\nscan manifests — skip completed chunks"]
-        LOAD["② loadChunkBatch()\nparse CSV · merge exchanges · quality checks"]
-        DPFT["③ .Q.dpft()\nwrite splayed HDB partition"]
-        SCAN --> LOAD --> DPFT
-    end
-
-    subgraph HDB["kdb+ HDB — hdb/"]
-        PART["YYYY.MM.DD/\ntrades/ · ohlcv_1m/\npartitioned by date · sorted sym,time"]
-    end
-
-    subgraph Ref["Reference Data & Adjustments"]
-        RI["ref_ingest.py\ngenerate synthetic ref CSVs"]
-        RT["ref_tables.q\nsecurity master · symbology\ncorp actions · adj factors"]
-        ADJ["adjlib.q\napplyAdj() · getAdjustedClose()"]
-        RI --> RT --> ADJ
-    end
-
-    User --> RBS --> Python
-    Python <-->|"submit · poll · download"| DAPI
-    FETCH -->|"CSV"| CSV
-    WRITE -->|"manifest"| MAN
-    WRITE -->|"job record"| JOBS
-    Python -->|"stdin: runLoader[]"| SCAN
-    SCAN -.->|"reads"| MAN
-    LOAD -.->|"reads"| CSV
-    LOAD -->|"update status + timestamps"| JOBS
-    LOAD -->|"sym ↔ instrument_id pairs"| SYM
-    DPFT --> PART
-    BSS -.->|"reads"| JOBS
-    RT -.->|"reads"| SYM
-    ADJ -.->|"queries"| HDB
+    A[orchestrator.py] --> B[Chunk by day × symbol]
+    B --> C[Cost guard < $50]
+    C --> D[Fetch from Databento]
+    D --> E[Write manifest + job]
 ```
+
+**2. Data Loading (q)**
+```mermaid
+flowchart TD
+    A[loader.q] --> B[Scan manifests]
+    B --> C[Parse CSV + quality checks]
+    C --> D[.Q.dpft write partition]
+```
+
+**3. Storage Layout**
+```
+staging/
+├── chunks/              # Raw CSV data
+├── metadata/
+│   ├── manifests/      # Load instructions
+│   └── jobs/           # Job status tracking
+└── reference/          # Symbology maps
+
+hdb/
+└── YYYY.MM.DD/         # Partitioned by date
+    ├── trades/
+    └── ohlcv_1m/
+```
+
+**4. Key Scripts**
+- **Shell**: `request_backfill.sh`, `backfill_status.sh`
+- **Python**: `orchestrator.py` (API client, cost control)
+- **q**: `loader.q`, `manifest.q`, `quality.q`, `adjlib.q`
+- **Reference**: `ref_ingest.py`, `ref_tables.q`
 
 ---
 
