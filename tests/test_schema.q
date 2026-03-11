@@ -23,12 +23,12 @@ assertEq:{[testName;actual;expected]
 
 assertEq["trades cols";
     cols trades;
-    `date`sym`time`instrument_id`exchange`price`size`side`conditions`sequence];
+    `date`time`sym`exchange`price`size`side`conditions`sequence`instrument_id];
 
-// Type chars: d=date s=symbol p=timestamp j=long s=symbol f=float j=long s=symbol s=symbol j=long
+// Type chars: d=date p=timestamp s=symbol s=symbol f=float j=long s=symbol s=symbol j=long j=long
 assertEq["trades types";
     {exec t from meta x} trades;
-    "dspjsfjssj"];
+    "dpssfjssjj"];
 
 // ---------------------------------------------------------------------------
 // ohlcv_1m
@@ -36,12 +36,12 @@ assertEq["trades types";
 
 assertEq["ohlcv_1m cols";
     cols ohlcv_1m;
-    `date`sym`time`exchange`instrument_id`open`high`low`close`volume];
+    `date`time`sym`exchange`open`high`low`close`volume`instrument_id];
 
-// d=date s=symbol p=timestamp s=symbol j=long f=float x4 j=long
+// d=date p=timestamp s=symbol s=symbol f=float x4 j=long j=long
 assertEq["ohlcv_1m types";
     {exec t from meta x} ohlcv_1m;
-    "dspsjffffj"];
+    "dpssffffjj"];
 
 // ---------------------------------------------------------------------------
 // backfill_jobs

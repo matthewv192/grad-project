@@ -22,15 +22,15 @@
 //   action    -> ignored at this stage (only "T" trade records kept)
 trades:([]
     date:`date$();
-    sym:`symbol$();
     time:`timestamp$();
-    instrument_id:`long$();
+    sym:`symbol$();
     exchange:`symbol$();
     price:`float$();
     size:`long$();
     side:`symbol$();
     conditions:`symbol$();
-    sequence:`long$()
+    sequence:`long$();
+    instrument_id:`long$()
  );
 
 // ohlcv_1m — one-minute OHLCV bars from Databento.
@@ -38,15 +38,15 @@ trades:([]
 // 'time' is the bar *open* time (start of the 1-minute window).
 ohlcv_1m:([]
     date:`date$();
-    sym:`symbol$();
     time:`timestamp$();
+    sym:`symbol$();
     exchange:`symbol$();
-    instrument_id:`long$();
     open:`float$();
     high:`float$();
     low:`float$();
     close:`float$();
-    volume:`long$()
+    volume:`long$();
+    instrument_id:`long$()
  );
 
 // ---------------------------------------------------------------------------
