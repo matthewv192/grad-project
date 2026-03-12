@@ -181,7 +181,6 @@ class TestJobRecord(unittest.TestCase):
             date="2024-01-15",
             status="downloaded",
             retries=1,
-            file_path="/tmp/test.csv",
             file_paths=["/tmp/test.csv"],
         )
         defaults.update(kwargs)

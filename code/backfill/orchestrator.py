@@ -150,7 +150,6 @@ class JobRecord:
     retries: int = 0
     error_msg: str = ""
     failure_type: str = ""     # api_error | download_error | parse_error | load_error | quality_error
-    file_path: str = ""        # primary CSV (used for checksum / row_count)
     file_paths: list = field(default_factory=list)  # all CSVs from this job
     checksum: str = ""
     row_count: int = 0
@@ -165,7 +164,10 @@ class JobRecord:
 
     @classmethod
     def from_dict(cls, d: dict) -> "JobRecord":
-        # Only pass fields that exist in the dataclass to handle older records
+        # Only pass fields that exist in the dataclass to handle older records.
+        # Migrate old records that stored file_path but not file_paths.
+        if d.get("file_path") and not d.get("file_paths"):
+            d = {**d, "file_paths": [d["file_path"]]}
         known = {f.name for f in cls.__dataclass_fields__.values()}
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -516,14 +518,8 @@ def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
 
 def _write_manifests_for_record(chunk: Chunk, record: "JobRecord",
                                  manifest_dir: Path) -> None:
-    """Write manifests for all CSVs stored in a job record.
-
-    Used on resume: `record.file_paths` holds every path from the original
-    download (populated since the multi-CSV fix). Older records that only
-    have `record.file_path` fall back to writing a single manifest so
-    backward compatibility with pre-existing job store entries is preserved.
-    """
-    all_paths = record.file_paths or ([record.file_path] if record.file_path else [])
+    """Write manifests for all CSVs stored in a job record (used on resume)."""
+    all_paths = record.file_paths
     for part_idx, raw_path in enumerate(all_paths):
         part_path = Path(raw_path)
         if not part_path.exists():
@@ -573,38 +569,25 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         return True
 
     # ---- Resume from downloaded, or failed-after-download? ----
-    # If a previous run completed the download but then crashed during
-    # write_manifest (setting status to "failed"), we can skip the re-download
-    # as long as the primary CSV still exists with a matching checksum.
-    if record and record.status in ("downloaded", "failed") and record.file_path:
-        csv_path = Path(record.file_path)
+    # If a previous run completed the download but then crashed, skip the
+    # re-download as long as the primary CSV still exists with a matching checksum.
+    if record and record.status in ("downloaded", "failed") and record.file_paths:
+        csv_path = Path(record.file_paths[0])
         if csv_path.exists():
-            # Verify stored checksum matches the primary file on disk.
-            # Catches corruption or partial downloads from a previous run.
-            if record.checksum:
-                actual_checksum = sha256_of_file(csv_path)
-                if actual_checksum != record.checksum:
-                    log.warning(_j(
-                        f"Chunk {chunk.chunk_id}: checksum mismatch on resume "
-                        f"(expected {record.checksum[:16]}..., "
-                        f"got {actual_checksum[:16]}...) — re-downloading"
-                    ))
-                    record.status = "pending"
-                    record.checksum = ""
-                    record.file_paths = []
-                    job_store.save(record)
-                    # Fall through to re-submit below
-                else:
-                    log.info(_j(f"Chunk {chunk.chunk_id}: checksum OK, "
-                                f"skipping download"))
-                    _write_manifests_for_record(
-                        chunk, record, manifest_dir)
-                    record.status = "loaded"
-                    job_store.save(record)
-                    return True
+            checksum_ok = (not record.checksum
+                           or sha256_of_file(csv_path) == record.checksum)
+            if not checksum_ok:
+                log.warning(_j(
+                    f"Chunk {chunk.chunk_id}: checksum mismatch on resume "
+                    f"(expected {record.checksum[:16]}...) — re-downloading"
+                ))
+                record.status = "pending"
+                record.checksum = ""
+                record.file_paths = []
+                job_store.save(record)
+                # Fall through to re-submit below
             else:
-                log.info(_j(f"Chunk {chunk.chunk_id} already downloaded "
-                             f"(no stored checksum), skipping to manifest"))
+                log.info(_j(f"Chunk {chunk.chunk_id}: resume OK, skipping download"))
                 _write_manifests_for_record(chunk, record, manifest_dir)
                 record.status = "loaded"
                 job_store.save(record)
@@ -675,7 +658,6 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
 
         # Use primary CSV for job-store record (first file)
         csv_path = csv_paths[0]
-        record.file_path = str(csv_path.resolve())
         record.file_paths = [str(p.resolve()) for p in csv_paths]
         record.checksum = sha256_of_file(csv_path)
         record.row_count = count_csv_rows(csv_path)

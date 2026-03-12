@@ -187,8 +187,6 @@ readOhlcvCSV:{[csvPath]
  };
 
 // ---------------------------------------------------------------------------
-// loadTrades — load one trades CSV into the HDB for a given partition date.
-// ---------------------------------------------------------------------------
 // checkExchangeLoaded — returns 1b if the given exchange/dataset is already present
 // in a partition, 0b if the partition is missing or the exchange is absent.
 // Reads only the exchange column file for efficiency.
@@ -200,37 +198,25 @@ checkExchangeLoaded:{[partDateDir;tableName;exchange]
     exchange in `$string get exFile
  };
 
-loadTrades:{[csvPath;partDate;dataset] '"deprecated - use loadChunkBatch"};
-
 // ---------------------------------------------------------------------------
-// loadOhlcv — load one ohlcv-1m CSV into the HDB for a given partition date.
+// updateJsonFile — merge an updates dict into a JSON file atomically (tmp + mv).
+// No-op if the file doesn't exist.
 // ---------------------------------------------------------------------------
-loadOhlcv:{[csvPath;partDate;dataset] '"deprecated - use loadChunkBatch"};
-
-// ---------------------------------------------------------------------------
-// updateJobRecord — write quality/verified status back to the Python job store.
-// Reads the existing JSON, updates status and optionally error_msg, writes back.
-// This lets the q loader mark a chunk as `verified after quality checks pass.
-// ---------------------------------------------------------------------------
-updateJobRecord:{[chunkId;newStatus;errMsg]
-    // Use getenv directly: in kdb+5, setenv does not update .z.e
-    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
-    jobsDir:hsym`$stagingStr,"/metadata/jobs";
-    p:` sv jobsDir,`$(string chunkId),".json";
-    if[not p in key p;
-        .lg.o[`loader;"job record not found for chunk: ",string chunkId];
-        :(::)
-    ];
+updateJsonFile:{[p;updates]
+    if[not p in key p; :(::)];
     raw:.j.k raze read0 p;
-    raw[`status]:string newStatus;
-    if[count errMsg; raw[`error_msg]:errMsg];
-    raw[`updated_at]:string .z.p;
-    // Write atomically via temp file then shell rename.
-    // Detect mv failures explicitly — a silent failure leaves job state diverged.
-    tmp:` sv jobsDir,`$(string[chunkId],".tmp");
+    raw[key updates]:value updates;
+    tmp:hsym`$(-4_1_string p),"tmp";
     tmp 0: enlist .j.j raw;
     mvErr:@[system;"mv ",1_string[tmp]," ",1_string p;{[e]e}];
-    if[count mvErr; @[hdel;tmp;::]; '"updateJobRecord: rename failed: ",mvErr];
+    if[count mvErr; @[hdel;tmp;::]; '"updateJsonFile rename failed: ",mvErr]
+ };
+
+// updateJobRecord — write status back to the Python job store.
+updateJobRecord:{[chunkId;newStatus;errMsg]
+    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
+    p:` sv (hsym`$stagingStr,"/metadata/jobs"),`$(string[chunkId],".json");
+    updateJsonFile[p; `status`error_msg`updated_at!(string newStatus;errMsg;string .z.p)];
     .lg.o[`loader;"job record updated: ",string[chunkId]," → ",string newStatus]
  };
 
@@ -275,50 +261,19 @@ flushSymbologyMap:{[]
     `.loader.symPending set 0#.loader.symPending
  };
 
-// ---------------------------------------------------------------------------
 // updateJobRecordTimestamps — write min_ts/max_ts back to the Python job store.
-// Called after .Q.dpft completes to record the actual data time range.
-// Observability only — no validation is performed.
-// ---------------------------------------------------------------------------
 updateJobRecordTimestamps:{[chunkId;minTs;maxTs]
     stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
-    jobsDir:hsym`$stagingStr,"/metadata/jobs";
-    p:` sv jobsDir,`$(string chunkId),".json";
-    if[not p in key p;
-        .lg.o[`loader;"timestamp record not found for chunk: ",string chunkId];
-        :(::)
-    ];
-    raw:.j.k raze read0 p;
-    raw[`min_ts]:string minTs;
-    raw[`max_ts]:string maxTs;
-    raw[`updated_at]:string .z.p;
-    tmp:` sv jobsDir,`$(string[chunkId],".tmp");
-    tmp 0: enlist .j.j raw;
-    mvErr:@[system;"mv ",1_string[tmp]," ",1_string p;{[e]e}];
-    if[count mvErr; @[hdel;tmp;::]; '"updateJobRecordTimestamps: rename failed: ",mvErr]
+    p:` sv (hsym`$stagingStr,"/metadata/jobs"),`$(string[chunkId],".json");
+    updateJsonFile[p; `min_ts`max_ts`updated_at!(string minTs;string maxTs;string .z.p)]
  };
 
-// ---------------------------------------------------------------------------
-// updateMetrics — append load timing to the per-chunk metrics JSON file
-// written by Python's metrics.py.  Silently skips if the file doesn't exist.
-// ---------------------------------------------------------------------------
+// updateMetrics — append load timing to the per-chunk metrics JSON file.
+// Silently skips if the file doesn't exist.
 updateMetrics:{[chunkId;requestId;loadNs;rowCount]
-    // Use getenv directly: in kdb+5, setenv does not update .z.e
     stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
-    metricsDir:hsym`$stagingStr,"/metrics/",string requestId;
-    p:` sv metricsDir,`$(string chunkId),".json";
-    if[not p in key p; :(::)];
-    raw:.j.k raze read0 p;
-    load_s:`float$loadNs%1000000000j;
-    raw[`load_s]:load_s;
-    raw[`rows_loaded]:rowCount;
-    raw[`updated_at]:string .z.p;
-    // Write atomically via tmp file then shell rename — same pattern as
-    // updateJobRecord — prevents a q crash mid-write from corrupting the file.
-    tmp:` sv metricsDir,`$(string[chunkId],".tmp");
-    tmp 0: enlist .j.j raw;
-    mvErr:@[system;"mv ",1_string[tmp]," ",1_string p;{[e]e}];
-    if[count mvErr; @[hdel;tmp;::]; '"updateMetrics: rename failed: ",mvErr]
+    p:` sv (hsym`$stagingStr,"/metrics/",string requestId),`$(string[chunkId],".json");
+    updateJsonFile[p; `load_s`rows_loaded`updated_at!(`float$loadNs%1000000000j;rowCount;string .z.p)]
  };
 
 // ---------------------------------------------------------------------------
@@ -459,7 +414,7 @@ runLoader:{[]
     // called .Q.dpft has no `sym` in scope, and `get` on any partition with enumerated
     // symbol columns signals '..sym (sym file not found one level up).
     symPath:` sv HDB_DIR,`sym;
-    if[symPath in key symPath; `sym set get symPath];  // global: visible to loadTrades/loadOhlcv
+    if[symPath in key symPath; `sym set get symPath];  // global: visible to unenumAll during merge
 
     processManifests manifestDir;
 

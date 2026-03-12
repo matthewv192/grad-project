@@ -15,52 +15,23 @@ if[not `lg in key `.;
 REF_DIR:hsym`$$[count s:getenv`STAGING_DIR;s;"staging"],"/reference";
 
 // ---------------------------------------------------------------------------
-// loadRefSecurityMaster
+// loadRefTable — generic helper: load a reference CSV into a named table.
 // ---------------------------------------------------------------------------
-loadRefSecurityMaster:{[]
-    p:` sv REF_DIR,`security_master.csv;
+loadRefTable:{[tableSymbol;filename;typeStr]
+    p:` sv REF_DIR,`$filename;
     if[not p in key p;
-        .lg.o[`ref;"security_master.csv not found — run ref_ingest.py first"];
+        .lg.o[`ref;filename," not found — run ref_ingest.py first"];
         :0
     ];
-    // sym(S) instrument_id(J) name(S) exchange(S) currency(S) valid_from(D) valid_to(D)
-    raw:("SJSSSDD";enlist csv) 0: p;
-    `ref_security_master set raw;
-    .lg.o[`ref;"loaded ",string[count raw]," rows into ref_security_master"];
+    raw:(typeStr;enlist csv) 0: p;
+    (tableSymbol) set raw;
+    .lg.o[`ref;"loaded ",string[count raw]," rows into ",string tableSymbol];
     count raw
  };
 
-// ---------------------------------------------------------------------------
-// loadRefCorpActions
-// ---------------------------------------------------------------------------
-loadRefCorpActions:{[]
-    p:` sv REF_DIR,`corp_actions.csv;
-    if[not p in key p;
-        .lg.o[`ref;"corp_actions.csv not found — run ref_ingest.py first"];
-        :0
-    ];
-    // sym(S) action_type(S) ex_date(D) record_date(D) effective_date(D) factor(F) description(S)
-    raw:("SSDDDFS";enlist csv) 0: p;
-    `ref_corp_actions set raw;
-    .lg.o[`ref;"loaded ",string[count raw]," rows into ref_corp_actions"];
-    count raw
- };
-
-// ---------------------------------------------------------------------------
-// loadRefAdjFactors
-// ---------------------------------------------------------------------------
-loadRefAdjFactors:{[]
-    p:` sv REF_DIR,`adj_factors.csv;
-    if[not p in key p;
-        .lg.o[`ref;"adj_factors.csv not found — run ref_ingest.py first"];
-        :0
-    ];
-    // sym, date, cumulative_factor, split_factor, dividend_factor
-    raw:("SDFFF";enlist csv) 0: p;
-    `ref_adj_factors set raw;
-    .lg.o[`ref;"loaded ",string[count raw]," rows into ref_adj_factors"];
-    count raw
- };
+loadRefSecurityMaster:{[] loadRefTable[`ref_security_master;"security_master.csv";"SJSSSDD"]};
+loadRefCorpActions:{[]    loadRefTable[`ref_corp_actions;"corp_actions.csv";"SSDDDFS"]};
+loadRefAdjFactors:{[]     loadRefTable[`ref_adj_factors;"adj_factors.csv";"SDFFF"]};
 
 // ---------------------------------------------------------------------------
 // loadSymbologyMap — read the auto-generated symbology_map.csv into memory
