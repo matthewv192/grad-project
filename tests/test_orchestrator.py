@@ -53,36 +53,33 @@ class TestGenerateChunks(unittest.TestCase):
         return generate_chunks(self.REQ, syms, start, end,
                                chunk_size, self.SCHEMA, self.DATASET)
 
-    def test_single_day_single_batch(self):
-        chunks = self._chunks(["AAPL", "MSFT"],
-                               date(2024, 1, 15), date(2024, 1, 15))
+    def test_single_day_single_symbol(self):
+        # 1 symbol × 1 day = 1 chunk
+        chunks = self._chunks(["AAPL"], date(2024, 1, 15), date(2024, 1, 15))
         self.assertEqual(len(chunks), 1)
-        self.assertEqual(chunks[0].symbols, ["AAPL", "MSFT"])
+        self.assertEqual(chunks[0].symbols, ["AAPL"])
         self.assertEqual(chunks[0].date, date(2024, 1, 15))
 
-    def test_symbols_split_across_batches(self):
-        # 7 symbols with chunk_size=5 → batches of 5 and 2
+    def test_symbols_each_get_own_chunk(self):
+        # 7 symbols × 1 day = 7 chunks (one per symbol)
         syms = [f"SYM{i:02d}" for i in range(7)]
-        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 15),
-                              chunk_size=5)
-        self.assertEqual(len(chunks), 2)
-        self.assertEqual(len(chunks[0].symbols), 5)
-        self.assertEqual(len(chunks[1].symbols), 2)
+        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 15))
+        self.assertEqual(len(chunks), 7)
+        self.assertTrue(all(len(c.symbols) == 1 for c in chunks))
 
     def test_multiple_days_multiplies_chunks(self):
-        # 3 days × 1 batch = 3 chunks
+        # 1 symbol × 3 days = 3 chunks
         chunks = self._chunks(["AAPL"],
                                date(2024, 1, 15), date(2024, 1, 17))
         self.assertEqual(len(chunks), 3)
         self.assertEqual(chunks[0].date, date(2024, 1, 15))
         self.assertEqual(chunks[2].date, date(2024, 1, 17))
 
-    def test_multi_day_multi_batch(self):
-        # 3 days × 3 batches (7 syms, chunk_size=3) = 9 chunks
+    def test_multi_day_multi_symbol(self):
+        # 7 symbols × 3 days = 21 chunks
         syms = [f"S{i}" for i in range(7)]
-        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 17),
-                              chunk_size=3)
-        self.assertEqual(len(chunks), 9)
+        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 17))
+        self.assertEqual(len(chunks), 21)
 
     def test_end_date_is_inclusive(self):
         chunks = self._chunks(["AAPL"],
