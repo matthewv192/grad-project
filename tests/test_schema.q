@@ -65,7 +65,7 @@ assertEq["ref_corp_actions cols";
 
 assertEq["ref_adj_factors cols";
     cols ref_adj_factors;
-    `sym`date`cumulative_factor`split_factor`dividend_factor];
+    `sym`date`cumulative_factor`split_factor`dividend_factor`loaded_at];
 
 // ---------------------------------------------------------------------------
 // Report

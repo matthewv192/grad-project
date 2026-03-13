@@ -14,6 +14,7 @@
 //   INTEGRATION_TEST_SYM  — e.g. "AAPL"         (default: first sym with data)
 
 \l schema/schema.q
+\l code/adjlib/adjlib.q
 
 failures:0N!0#`;
 
@@ -112,6 +113,48 @@ assertEq["prices positive"; badPrice; 0j];
 badSize:count select from trades
     where date=TEST_DATE, sym=TEST_SYM, size<=0;
 assertEq["sizes positive"; badSize; 0j];
+
+// ---------------------------------------------------------------------------
+// Test 7: ohlcv_1m partition exists
+// ---------------------------------------------------------------------------
+
+assertEq["ohlcv_1m dir exists"; `ohlcv_1m in key partDir; 1b];
+
+// ---------------------------------------------------------------------------
+// Adj tests (Tests 8-10): getAdjustedClose on real HDB data.
+//
+// Skipped gracefully when:
+//   - No ohlcv_1m rows for (TEST_SYM, TEST_DATE) in the HDB
+//   - ref_adj_factors is empty after attempting to load from CSV
+// ---------------------------------------------------------------------------
+
+adjFactorCount:@[loadRefAdjFactors; ::; {[e] -1 "adj factors load error: ",e; 0}];
+ohlcvCount:count select from ohlcv_1m where date=TEST_DATE, sym=TEST_SYM;
+
+skipAdj:0b;
+if[ohlcvCount=0; skipAdj:1b; -1 "SKIP adj: no ohlcv_1m rows for ",string[TEST_SYM]," on ",string TEST_DATE];
+if[adjFactorCount=0; skipAdj:1b; -1 "SKIP adj: no adj factors loaded — run ref_ingest.py --symbols ",string[TEST_SYM]," first"];
+
+if[not skipAdj;
+
+    // Test 8: getAdjustedClose returns correct schema with adj_close column
+    adjResult:getAdjustedClose[TEST_SYM;TEST_DATE;TEST_DATE;`backward;0Np];
+    assertEq["adj: result is table";             type adjResult;                  98h];
+    assertEq["adj: has adj_close col";           `adj_close in cols adjResult;    1b];
+    assertEq["adj: row count matches ohlcv_1m";  count adjResult;                 ohlcvCount];
+
+    // Test 9: adj_close is positive and non-null for all bars
+    badAdj:count select from adjResult where (null adj_close) or adj_close<=0;
+    assertEq["adj: adj_close positive non-null"; badAdj; 0j];
+
+    // Test 10: asOf before any data could have been loaded → factors excluded
+    // → adj_close defaults to raw close (1.0 fill) via no-factor path
+    earlyAsOf:1900.01.01D00:00:00.000000000;
+    noFctResult:getAdjustedClose[TEST_SYM;TEST_DATE;TEST_DATE;`backward;earlyAsOf];
+    assertEq["adj: asOf=past leaves adj_close=close";
+        (noFctResult`adj_close) ~ (noFctResult`close); 1b];
+
+ ];
 
 // ---------------------------------------------------------------------------
 // Report

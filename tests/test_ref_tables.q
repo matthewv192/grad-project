@@ -48,11 +48,11 @@ system "mkdir -p ",TEST_REF_DIR;
 
 // adj_factors.csv — 4 rows (two symbols, two dates each)
 (hsym`$TEST_REF_DIR,"/adj_factors.csv") 0: (
-    "sym,date,cumulative_factor,split_factor,dividend_factor";
-    "AAPL,2024-06-09,0.5,0.5,1.0";
-    "AAPL,2024-06-10,1.0,1.0,1.0";
-    "MSFT,2024-06-09,0.998,1.0,0.998";
-    "MSFT,2024-06-10,1.0,1.0,1.0"
+    "sym,date,cumulative_factor,split_factor,dividend_factor,loaded_at";
+    "AAPL,2024-06-09,0.5,0.5,1.0,2024.01.01T00:00:00.000000000";
+    "AAPL,2024-06-10,1.0,1.0,1.0,2024.01.01T00:00:00.000000000";
+    "MSFT,2024-06-09,0.998,1.0,0.998,2024.01.01T00:00:00.000000000";
+    "MSFT,2024-06-10,1.0,1.0,1.0,2024.01.01T00:00:00.000000000"
  );
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,7 @@ assertEq["adj_factors row count"; n; 4j];
 assertEq["adj_factors sym type";               type ref_adj_factors`sym;               11h];
 assertEq["adj_factors date type";              type ref_adj_factors`date;              14h];
 assertEq["adj_factors cumulative_factor type"; type ref_adj_factors`cumulative_factor;  9h];
+assertEq["adj_factors loaded_at type";         type ref_adj_factors`loaded_at;          12h];
 
 preFactor:exec first cumulative_factor from ref_adj_factors where sym=`AAPL, date=2024.06.09;
 assertEq["AAPL pre-split cumulative_factor"; preFactor; 0.5f];

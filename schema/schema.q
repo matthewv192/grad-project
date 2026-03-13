@@ -106,12 +106,15 @@ ref_corp_actions:([]
 
 // ref_adj_factors — cumulative price adjustment factors per sym per date.
 // Used by adjlib.q to scale prices and volumes for corporate actions.
+// loaded_at records when each batch of factors was ingested, enabling
+// point-in-time (PIT) queries: "what factors did I have as of time T?"
 ref_adj_factors:([]
     sym:`symbol$();
     date:`date$();
     cumulative_factor:`float$();
     split_factor:`float$();
-    dividend_factor:`float$()
+    dividend_factor:`float$();
+    loaded_at:`timestamp$()
  );
 
 // ref_symbology_map — maps Databento instrument_id → normalised sym, per dataset.

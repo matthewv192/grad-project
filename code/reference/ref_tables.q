@@ -31,7 +31,7 @@ loadRefTable:{[tableSymbol;filename;typeStr]
 
 loadRefSecurityMaster:{[] loadRefTable[`ref_security_master;"security_master.csv";"SJSSSDD"]};
 loadRefCorpActions:{[]    loadRefTable[`ref_corp_actions;"corp_actions.csv";"SSDDDFS"]};
-loadRefAdjFactors:{[]     loadRefTable[`ref_adj_factors;"adj_factors.csv";"SDFFF"]};
+loadRefAdjFactors:{[]     loadRefTable[`ref_adj_factors;"adj_factors.csv";"SDFFFP"]};
 
 // ---------------------------------------------------------------------------
 // loadSymbologyMap — read the auto-generated symbology_map.csv into memory

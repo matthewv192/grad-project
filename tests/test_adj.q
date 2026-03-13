@@ -67,12 +67,14 @@ postSplitBars:([]
  );
 
 // Factors covering the full test window
+// loaded_at = 2024.01.01 (used to test asOf PIT filtering in Tests 14/15)
 syntheticFactors:([]
     sym:              `AAPL`AAPL`AAPL`AAPL`AAPL;
     date:             2024.06.07 2024.06.08 2024.06.09 2024.06.10 2024.06.11;
     cumulative_factor:0.5 0.5 0.5 1.0 1.0;
     split_factor:     0.5 0.5 0.5 1.0 1.0;
-    dividend_factor:  1.0 1.0 1.0 1.0 1.0
+    dividend_factor:  1.0 1.0 1.0 1.0 1.0;
+    loaded_at:        5#2024.01.01D00:00:00.000000000
  );
 
 // Inject synthetic factors into the in-memory ref table so getAdjustedClose
@@ -149,7 +151,7 @@ assertEq["empty applyAdj rows";   count emptyAdj; 0j];
 // ---------------------------------------------------------------------------
 
 // ohlcv_1m is empty (no HDB loaded) — result will be empty but schema correct
-result:getAdjustedClose[`AAPL;2024.06.07;2024.06.11;`backward];
+result:getAdjustedClose[`AAPL;2024.06.07;2024.06.11;`backward;0Np];
 assertEq["getAdjustedClose returns table";   type result; 98h];
 assertEq["getAdjustedClose has adj_close";   `adj_close in cols result; 1b];
 
@@ -189,7 +191,8 @@ futureFactors:([]
     date:             2024.06.10 2024.06.11;
     cumulative_factor:1.0 1.0;
     split_factor:     1.0 1.0;
-    dividend_factor:  1.0 1.0 );
+    dividend_factor:  1.0 1.0;
+    loaded_at:        2#2024.01.01D00:00:00.000000000 );
 
 // futureFactors has no entry for 2024.06.07..09 → factor defaults to 1.0 → no adjustment
 wrongAdj:applyAdj[preSplitBars;futureFactors];
@@ -208,7 +211,7 @@ assertEq["wrong factors != correct adjustment";
 
 `ohlcv_1m set allBars;  // inject 5-row table spanning the 2:1 split
 
-adjResult:getAdjustedClose[`AAPL;2024.06.07;2024.06.11;`backward];
+adjResult:getAdjustedClose[`AAPL;2024.06.07;2024.06.11;`backward;0Np];
 assertEq["PIT result is table";       type adjResult;  98h];
 assertEq["PIT result has adj_close";  `adj_close in cols adjResult; 1b];
 assertEq["PIT result row count";      count adjResult; 5j];
@@ -236,7 +239,8 @@ fwdFactors:([]
     date:             2024.06.09 2024.06.10;
     cumulative_factor:0.5 1.0;
     split_factor:     0.5 1.0;
-    dividend_factor:  1.0 1.0 );
+    dividend_factor:  1.0 1.0;
+    loaded_at:        2#2024.01.01D00:00:00.000000000 );
 
 fwdPre:([]
     date: enlist 2024.06.09; sym: enlist `AAPL;
@@ -255,8 +259,8 @@ fwdPost:([]
 `ohlcv_1m set fwdPre,fwdPost;
 `ref_adj_factors set fwdFactors;
 
-bkwdRes:getAdjustedClose[`AAPL;2024.06.09;2024.06.10;`backward];
-fwdRes: getAdjustedClose[`AAPL;2024.06.09;2024.06.10;`forward];
+bkwdRes:getAdjustedClose[`AAPL;2024.06.09;2024.06.10;`backward;0Np];
+fwdRes: getAdjustedClose[`AAPL;2024.06.09;2024.06.10;`forward;0Np];
 
 // backward: both bars expressed in post-split terms → adj_close = 50
 assertClose["backward pre-split adj_close=50";  (bkwdRes`adj_close)[0]; 50.0; 0.001];
@@ -267,11 +271,49 @@ assertClose["forward pre-split adj_close=100";  (fwdRes`adj_close)[0]; 100.0; 0.
 assertClose["forward post-split adj_close=100"; (fwdRes`adj_close)[1]; 100.0; 0.001];
 
 // Unsupported method should signal an error
-badMethodResult:@[{getAdjustedClose[`AAPL;2024.06.09;2024.06.10;x]}; `total; {[e]0b}];
+badMethodResult:@[{getAdjustedClose[`AAPL;2024.06.09;2024.06.10;x;0Np]}; `total; {[e]0b}];
 assertEq["unsupported method signals error"; badMethodResult; 0b];
 
 // Restore globals
 `ohlcv_1m set 0#ohlcv_1m;
+`ref_adj_factors set syntheticFactors;
+
+// ---------------------------------------------------------------------------
+// Test 14: asOf PIT — asOf before loaded_at excludes all factors
+//
+// syntheticFactors has loaded_at = 2024.01.01D00:00:00.
+// Querying with asOf = 2023.12.31D23:59:59 → no factors pass the filter
+// → adj_close defaults to raw close (factor = 1.0).
+// ---------------------------------------------------------------------------
+
+`ohlcv_1m set preSplitBars;
+earlyAsOf:2023.12.31D23:59:59.000000000;
+pitEarlyResult:getAdjustedClose[`AAPL;2024.06.07;2024.06.09;`backward;earlyAsOf];
+assertEq["PIT asOf=past: returns table";  type pitEarlyResult; 98h];
+assertEq["PIT asOf=past: row count";      count pitEarlyResult; 3j];
+// No factors at earlyAsOf → adj_close = raw close (1.0 fill)
+assertClose["PIT asOf=past: adj_close=raw close[0]"; (pitEarlyResult`adj_close)[0]; 193.0; 0.001];
+assertClose["PIT asOf=past: adj_close=raw close[2]"; (pitEarlyResult`adj_close)[2]; 195.0; 0.001];
+`ohlcv_1m set 0#ohlcv_1m;
+
+// ---------------------------------------------------------------------------
+// Test 15: asOf PIT — asOf after loaded_at includes factors normally
+//
+// Querying with asOf = 2025.01.01D00:00:00 → all syntheticFactors pass
+// → adj_close = raw close * 0.5 (pre-split factor).
+// ---------------------------------------------------------------------------
+
+`ohlcv_1m set preSplitBars;
+lateAsOf:2025.01.01D00:00:00.000000000;
+pitLateResult:getAdjustedClose[`AAPL;2024.06.07;2024.06.09;`backward;lateAsOf];
+assertEq["PIT asOf=future: returns table"; type pitLateResult; 98h];
+// Factors present → adj_close = raw * 0.5
+assertClose["PIT asOf=future: adj_close=96.5"; (pitLateResult`adj_close)[0]; 96.5; 0.001];
+assertClose["PIT asOf=future: adj_close=97.0"; (pitLateResult`adj_close)[1]; 97.0; 0.001];
+assertClose["PIT asOf=future: adj_close=97.5"; (pitLateResult`adj_close)[2]; 97.5; 0.001];
+`ohlcv_1m set 0#ohlcv_1m;
+
+// Restore
 `ref_adj_factors set syntheticFactors;
 
 // ---------------------------------------------------------------------------

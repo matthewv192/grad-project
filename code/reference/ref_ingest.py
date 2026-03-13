@@ -29,7 +29,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -146,6 +146,12 @@ def fetch_corp_actions(symbols: list[str]) -> list[dict]:
 # Factor computation
 # ---------------------------------------------------------------------------
 
+def _now_kdb() -> str:
+    """Return current UTC time as a kdb+ timestamp string: YYYY.MM.DDTHH:MM:SS.nnnnnnnnn."""
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y.%m.%dT%H:%M:%S.") + f"{now.microsecond:06d}000"
+
+
 def compute_adj_factors(symbols: list[str], corp_actions: list[dict],
                         start: date, end: date) -> list[dict]:
     """Compute daily cumulative backward-adjustment factors.
@@ -170,6 +176,7 @@ def compute_adj_factors(symbols: list[str], corp_actions: list[dict],
     for sym in events_by_sym:
         events_by_sym[sym].sort(key=lambda x: x[0])
 
+    loaded_at = _now_kdb()
     rows = []
     current = start
     while current <= end:
@@ -190,6 +197,7 @@ def compute_adj_factors(symbols: list[str], corp_actions: list[dict],
                 "cumulative_factor": round(cum, 8),
                 "split_factor": round(split_f, 8),
                 "dividend_factor": round(div_f, 8),
+                "loaded_at": loaded_at,
             })
         current += timedelta(days=1)
 
@@ -216,6 +224,20 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writeheader()
         writer.writerows(rows)
     log.info(f"Wrote {len(rows)} rows to {path}")
+
+
+def _append_csv(path: Path, rows: list[dict]) -> None:
+    """Append rows to an existing CSV, preserving all prior rows.
+
+    Used for adj_factors.csv so that each ingestion batch adds a new revision
+    (with its own loaded_at timestamp) rather than overwriting the prior one.
+    This preserves the full factor history needed for point-in-time queries.
+    """
+    if not rows:
+        return
+    existing = _read_csv(path)
+    _write_csv(path, existing + rows)
+    log.info(f"Appended {len(rows)} rows to {path} (total: {len(existing) + len(rows)})")
 
 
 def _upsert_csv(path: Path, new_rows: list[dict], key_cols: list[str]) -> None:
@@ -327,12 +349,8 @@ def ingest_ref_data(symbols: list[str], start: date, end: date,
         r for r in factor_rows
         if date.fromisoformat(r["date"]) in all_dates
     ]
-    _upsert_csv(
-        ref_dir / "adj_factors.csv",
-        factor_rows,
-        key_cols=["sym", "date"],
-    )
-    log.info(f"Adj factors: {len(factor_rows)} row(s) written/updated")
+    _append_csv(ref_dir / "adj_factors.csv", factor_rows)
+    log.info(f"Adj factors: {len(factor_rows)} row(s) appended (PIT history preserved)")
 
     # ---- Security master: stub ----
     _upsert_csv(
@@ -368,6 +386,7 @@ def _synthetic_corp_actions() -> list[dict]:
 def _synthetic_adj_factors(symbols: list[str],
                             start: date, end: date) -> list[dict]:
     aapl_split = date(2024, 6, 10)
+    loaded_at = "2024.01.01T00:00:00.000000000"
     rows = []
     d = start
     while d <= end:
@@ -378,6 +397,7 @@ def _synthetic_adj_factors(symbols: list[str],
                 "cumulative_factor": cum,
                 "split_factor": cum,
                 "dividend_factor": 1.0,
+                "loaded_at": loaded_at,
             })
         d += timedelta(days=1)
     return rows
