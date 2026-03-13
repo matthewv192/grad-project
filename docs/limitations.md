@@ -58,8 +58,8 @@ Always use `--dry-run` first when working with a new date range or symbol list t
 ### Chunk size is not validated against Databento API limits
 `BACKFILL_CHUNK_SIZE` (default 10 symbols) is not checked against Databento's batch submission limits before submitting. If the limit is exceeded, the job will fail at the Databento API with a generic error rather than a pre-submission validation message.
 
-### `showJobsTable` reads all job records on every call
-The `showJobsTable` function in `manifest.q` reads and parses every `.json` file in the job store directory each time it is called. For large bacfills with thousands of chunks this can be slow. There is currently no indexing or caching.
+### `--status` reads all job records on every call
+`python orchestrator.py --status` reads and parses every `.json` file in the job store directory each time it is called. For large backfills with thousands of chunks this can be slow. There is currently no indexing or caching.
 
 ---
 

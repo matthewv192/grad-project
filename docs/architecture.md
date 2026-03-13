@@ -39,14 +39,16 @@ flowchart TD
 **3. Storage Layout**
 ```
 staging/
-├── chunks/              # Raw CSV data
+├── <chunk_id>/          # Raw CSV data (one dir per chunk)
 ├── metadata/
-│   ├── manifests/      # Load instructions
-│   └── jobs/           # Job status tracking
-└── reference/          # Symbology maps
+│   ├── manifests/       # Load instructions (one JSON per chunk)
+│   ├── jobs/            # Job status tracking (one JSON per chunk)
+│   └── archive/         # Verified manifests (moved after load)
+├── metrics/             # Per-chunk timing metrics
+└── reference/           # Symbology maps
 
 hdb/
-└── YYYY.MM.DD/         # Partitioned by date
+└── YYYY.MM.DD/          # Partitioned by date
     ├── trades/
     └── ohlcv_1m/
 ```
