@@ -748,6 +748,82 @@ def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
 
 
 # ---------------------------------------------------------------------------
+# Run summary — human-readable terminal output
+# ---------------------------------------------------------------------------
+
+def _classify_failure(error_msg: str, failure_type: str) -> str:
+    """Return a human-readable reason for a chunk failure."""
+    ft = failure_type.lower()
+    em = error_msg.lower()
+    if ft == "quality_error":
+        return "quality check failed (duplicates / ordering / nulls)"
+    if ft == "load_error":
+        return "q loader error"
+    if "weekend" in em or "holiday" in em or "no data" in em or "empty" in em:
+        return "no data (weekend / public holiday / trading halt)"
+    if ft == "download_error" or "download" in em:
+        return "download error"
+    if ft == "api_error" or "databento" in em or "api" in em:
+        return "Databento API error"
+    if ft == "parse_error":
+        return "CSV parse error"
+    if "cost" in em or "limit" in em:
+        return "cost limit exceeded"
+    if "timeout" in em:
+        return "poll timeout"
+    return error_msg[:120] if error_msg else "unknown error"
+
+
+def _print_run_summary(records: list, title: str = "Backfill Summary") -> None:
+    """Print a human-readable terminal summary after a run completes."""
+    from collections import defaultdict
+
+    verified = [r for r in records if r.status == "verified"]
+    failed   = [r for r in records if r.status == "failed"]
+
+    print(f"\n{'='*60}")
+    print(f"  {title}")
+    print(f"{'='*60}")
+
+    if verified:
+        # Group by dataset (exchange) → collect unique syms and total rows
+        by_exchange: dict[str, dict] = defaultdict(lambda: {"syms": set(), "rows": 0})
+        for r in verified:
+            by_exchange[r.dataset]["syms"].update(r.symbols)
+            by_exchange[r.dataset]["rows"] += r.row_count
+
+        all_syms = sorted({s for r in verified for s in r.symbols})
+        total_rows = sum(r.row_count for r in verified)
+
+        print(f"\n  STATUS : SUCCESS ({len(verified)} chunk(s) verified)")
+        print(f"  SYMBOLS: {', '.join(all_syms)}")
+        print()
+        print(f"  {'Exchange':<20} {'Rows':>12}  Symbols")
+        print(f"  {'-'*55}")
+        for exchange, info in sorted(by_exchange.items()):
+            syms_str = ", ".join(sorted(info["syms"]))
+            print(f"  {exchange:<20} {info['rows']:>12,}  {syms_str}")
+        print(f"  {'-'*55}")
+        print(f"  {'TOTAL':<20} {total_rows:>12,}")
+    else:
+        print(f"\n  STATUS : NO DATA LOADED")
+
+    if failed:
+        print(f"\n  FAILURES ({len(failed)} chunk(s)):")
+        # Group failures by reason so repeated causes appear once
+        from collections import Counter
+        reasons = Counter(
+            _classify_failure(r.error_msg, r.failure_type) for r in failed
+        )
+        for reason, count in reasons.most_common():
+            print(f"    x{count}  {reason}")
+        print(f"\n  Tip: run with --retry-failed to requeue, or "
+              f"--status for per-chunk detail.")
+
+    print(f"{'='*60}\n")
+
+
+# ---------------------------------------------------------------------------
 # Status display
 # ---------------------------------------------------------------------------
 
@@ -919,6 +995,11 @@ def main(argv=None):
             except Exception as exc:
                 log.error(_j(f"q loader failed: {exc}"))
                 sys.exit(1)
+
+        # ---- Terminal summary for retry run ----
+        retry_ids = {c.request_id for c in retry_chunks}
+        retry_records = [r for r in job_store.load_all() if r.request_id in retry_ids]
+        _print_run_summary(retry_records, title=f"Retry Summary — {retry_id}")
         return
 
     # ---- Normal mode: require symbols/start/end ----
@@ -1015,6 +1096,10 @@ def main(argv=None):
     summary_path = write_summary(STAGING_DIR, request_id, wall_s=_wall_s)
     if summary_path:
         log.info(_j(f"Metrics summary: {summary_path}"))
+
+    # ---- Terminal summary ----
+    run_records = [r for r in job_store.load_all() if r.request_id == request_id]
+    _print_run_summary(run_records, title=f"Backfill Summary — {request_id}")
 
     if failed > 0:
         sys.exit(1)
