@@ -299,6 +299,78 @@ python3 -m pytest tests/test_metrics.py -v
 
 ---
 
+## Logs & Diagnostics
+
+### Log files
+
+Every run writes a log file under `logs/`:
+
+| Mode | Log file |
+|------|----------|
+| Normal backfill | `logs/<request_id>.log` |
+| `--retry-failed` | `logs/retry_<timestamp>.log` |
+| `--load-only` | `logs/load_only_<timestamp>.log` |
+
+The request ID is printed at the start of every run, so you can match terminal output to the log file.
+
+### Log format
+
+Every line is a JSON object:
+
+```json
+{"time":"2024-06-03T12:04:13","level":"INFO","logger":"orchestrator","msg":"..."}
+```
+
+The q loader runs as a subprocess — its output is captured and re-emitted wrapped in the orchestrator's JSON, with a `[q]` prefix in `msg`:
+
+```json
+{"time":"...","level":"INFO","logger":"orchestrator","msg":"[q] 2024.06.03D12:06:16 [loader] loading batch: schema=trades date=2024.06.03 chunks=1"}
+```
+
+**Important:** q-layer errors appear with `[ERROR]` inside the `msg` string, not in the top-level `level` field (which stays `INFO`). This means grepping for `"level":"ERROR"` alone will miss q errors.
+
+### Finding errors quickly
+
+```bash
+# Catches both Python-layer errors and q-layer errors
+grep -i 'error\|failed\|failure' logs/<request_id>.log
+
+# Python-layer errors only (level field)
+grep '"level":"ERROR"' logs/<request_id>.log
+
+# q-layer errors only ([ERROR] prefix in msg)
+grep '\[ERROR\]' logs/<request_id>.log
+
+# See just the meaningful events (skip polling noise)
+grep -v 'Polling job_id' logs/<request_id>.log
+```
+
+### Reading a failure
+
+When a chunk fails the log will show the sequence:
+
+1. `quality checks failed` or similar error message in `msg`
+2. `job record updated: <chunk_id> → loaded` — data was parsed
+3. `job record updated: <chunk_id> → failed` — write was aborted due to the error
+
+The specific cause is always on the line just before the status transitions. For example:
+
+```
+[quality] QUALITY FAILURES trades date=2024.06.03: dups=218 ordering_errors=0 null_cells=0
+[loader] job record updated: req_... → loaded
+[loader] job record updated: req_... → failed
+```
+
+For a detailed look at a specific failed chunk, inspect its job store record directly:
+
+```bash
+cat staging/metadata/jobs/<chunk_id>.json
+```
+
+The `error_msg` and `failure_type` fields contain the exact failure reason.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

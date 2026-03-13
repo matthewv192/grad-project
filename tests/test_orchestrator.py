@@ -314,13 +314,14 @@ class TestEstimateCost(unittest.TestCase):
                                "trades", "2024-01-15", "2024-01-16")
         self.assertAlmostEqual(result, 1.23)
 
-    def test_bento_error_returns_zero(self):
-        """A Databento API error (unknown dataset etc.) disables the guard."""
+    def test_bento_error_raises_runtime_error(self):
+        """A Databento API error must raise so the cost guard is never silently disabled."""
         client = self._client()
         client.metadata.get_cost.side_effect = db.BentoError("unknown dataset")
-        result = estimate_cost(client, "XNAS.ITCH", ["AAPL"],
-                               "trades", "2024-01-15", "2024-01-16")
-        self.assertEqual(result, 0.0)
+        with self.assertRaises(RuntimeError) as ctx:
+            estimate_cost(client, "XNAS.ITCH", ["AAPL"],
+                          "trades", "2024-01-15", "2024-01-16")
+        self.assertIn("Cost estimation failed", str(ctx.exception))
 
     def test_unexpected_error_raises_runtime_error(self):
         """Network faults and SDK bugs must propagate so the guard is not silently lost."""

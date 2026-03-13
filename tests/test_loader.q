@@ -206,6 +206,27 @@ assertEq["XNYS.PILLAR in merged partition"; (`$"XNYS.PILLAR") in exchangeSyms; 1
 assertEq["merged partition total rows";    count mergedTrades;              4j];
 
 // ---------------------------------------------------------------------------
+// Test 12: Quality failure — duplicate rows abort the write, return 0
+//
+// A CSV with 3 identical rows (same sym, time, sequence) must trigger the
+// duplicate quality check and cause loadChunkBatch to return 0j without
+// writing any partition for that date.  Verifies Fix 1: the state machine
+// goes directly to `failed without first passing through `loaded.
+// ---------------------------------------------------------------------------
+
+dupTradesCSV:"/tmp/grad_test_dup_trades.csv";
+(hsym`$dupTradesCSV) 0: (
+    "ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,symbol";
+    "2024-03-01T09:30:00.000000100,2024-03-01T09:30:00.000000000,80,1,1001,T,A,0,185.50,100,128,1000,1,AAPL";
+    "2024-03-01T09:30:00.000000100,2024-03-01T09:30:00.000000000,80,1,1001,T,A,0,185.50,100,128,1000,1,AAPL";
+    "2024-03-01T09:30:00.000000100,2024-03-01T09:30:00.000000000,80,1,1001,T,A,0,185.50,100,128,1000,1,AAPL" );
+
+dupResult:loadChunkBatch mkM[`c_dup;`trades;2024.03.01;`$"XNAS.ITCH";dupTradesCSV;3j];
+assertEq["quality failure returns 0"; dupResult; 0j];
+// Partition directory must not have been written for this date
+assertEq["quality failure: no partition written"; `2024.03.01 in key HDB_DIR; 0b];
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 

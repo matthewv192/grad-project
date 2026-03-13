@@ -27,9 +27,11 @@ When Databento returns a zero-row CSV (e.g. a public holiday, trading halt, or n
 `runQualityChecks` in `quality.q` checks the freshly-read data before it is written to disk. Empty placeholder rows added by `.Q.chk` are not quality-checked.
 
 ### Type casting errors abort the current load
-The type casts in `readTradesCSV` and `readOhlcvCSV` (in `loader.q`) are not wrapped in error traps. A single malformed value in a CSV will abort `loadChunkBatch` for that chunk. If the error occurs after the partition write lock has been acquired, the lock directory is left on disk (stale lock).
+The type casts in `readTradesCSV` and `readOhlcvCSV` (in `loader.q`) are not wrapped in error traps. A single malformed value in a CSV will abort `loadChunkBatch` for that chunk.
 
-**Recovery:** Clear stale locks with:
+The partition merge and write block is wrapped in a protected eval that releases the write lock before signalling, so a type cast failure during the merge step will not leave a stale lock on disk. However, a failure during the initial CSV parse (before the lock is acquired) is not error-trapped and will propagate as an unhandled signal.
+
+**Recovery from stale locks (if they occur):** Clear with:
 ```bash
 find hdb -name ".*.lock" -type d -exec rmdir {} +
 ```
@@ -45,9 +47,9 @@ Adding support for other Databento schemas (e.g. `mbp-1`, `tbbo`, `ohlcv-1d`) re
 
 ## Cost Safeguard
 
-The `BACKFILL_MAX_COST_USD` cost guard (default $50) calls the Databento metadata API before each batch submission. If Databento returns an API error for that call (e.g. unknown dataset, invalid symbol type), the cost estimate defaults to `0.0` and the guard is **disabled for that chunk** — the job is submitted without a cost check. A warning is logged when this happens.
+The `BACKFILL_MAX_COST_USD` cost guard (default $50) calls the Databento metadata API before each batch submission. If Databento returns an API error for that call (e.g. unknown dataset, invalid symbol type), the run is aborted with a `RuntimeError` — the job is never submitted without a cost estimate.
 
-Unexpected failures (network timeout, SDK bug) abort the run entirely, so the guard is never silently bypassed by an infrastructure fault.
+To disable the cost guard entirely (e.g. for a trusted internal dataset), set `BACKFILL_MAX_COST_USD=0`.
 
 Always use `--dry-run` first when working with a new date range or symbol list to see the cost estimate before committing.
 

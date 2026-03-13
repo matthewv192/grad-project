@@ -193,7 +193,7 @@ readOhlcvCSV:{[csvPath]
 checkExchangeLoaded:{[partDateDir;tableName;exchange]
     if[not tableName in key partDateDir; :0b];
     exFile:` sv partDateDir,tableName,`exchange;
-    if[not exFile in key exFile; :0b];   // pre-schema partition without exchange col
+    if[not `exchange in key ` sv partDateDir,tableName; :0b];   // pre-schema partition without exchange col
     // .Q.dpft enumerates ALL symbol columns; unenumerate before comparing
     exchange in `$string get exFile
  };
@@ -340,20 +340,34 @@ loadChunkBatch:{[manifests]
 
     if[count[qResult] and qResult[`failed]>0j;
         msg:"quality failures: dups=",string[qResult`dups]," ordering=",string[qResult`ordering_errors]," nulls=",string[qResult`total_nulls];
-        {[m;msg] updateJobRecord[m`chunk_id; `loaded; msg]; updateJobRecord[m`chunk_id; `failed; "quality checks failed"]} [;msg] each validPending;
+        {[m;msg] updateJobRecord[m`chunk_id; `failed; msg]} [;msg] each validPending;
         :0j
     ];
 
     lockDir:acquireWriteLock[partDateDir;schema];
 
-    merged:raw;
-    if[schema in key partDateDir;
-        existing:unenumAll get ` sv partDateDir,schema;
-        existing:update date:partDate from existing;
-        existing:(cols[value schema] inter cols existing)#existing;
-        noDate:delete date from existing,((cols existing)#raw);
-        merged:update date:partDate from `sym`time xasc noDate
+    // Merge existing partition data with the new batch.
+    // Wrapped in a protected eval so any failure (e.g. unenumAll, schema mismatch,
+    // xasc error) releases the lock before signalling — preventing stale lock files.
+    mergeResult:.[{[pDir;sch;rawData;pDate]
+        merged:rawData;
+        if[sch in key pDir;
+            existing:unenumAll get ` sv pDir,sch;
+            existing:update date:pDate from existing;
+            existing:(cols[value sch] inter cols existing)#existing;
+            noDate:delete date from existing,((cols existing)#rawData);
+            merged:update date:pDate from `sym`time xasc noDate
+         ];
+        merged
+     }; (partDateDir;schema;raw;partDate);
+     {[lockDir;e] releaseWriteLock lockDir; 'e}[lockDir;]];
+
+    if[10h=type mergeResult;
+        .lg.e[`loader;"partition merge failed: ",mergeResult];
+        {[m;msg] updateJobRecord[m`chunk_id;`failed;"merge error: ",msg]}[;mergeResult] each validPending;
+        :0j
     ];
+    merged:mergeResult;
 
     (`$string schema) set merged;
     .[.Q.dpft; (HDB_DIR; partDate; `sym; schema);
@@ -422,7 +436,8 @@ runLoader:{[]
     // updateSymbologyMap stages entries in .loader.symPending during each loadChunk;
     // writing once here avoids N CSV read/write cycles for an N-chunk backfill.
     @[flushSymbologyMap; ::;
-      {[e] .lg.e[`loader;"symbology flush error: ",e]}];
+      {[e] .lg.e[`loader;"symbology flush error: ",e];
+           `.loader.symPending set 0#.loader.symPending}];
 
     // Fill missing tables across all partitions once, after all chunks are loaded.
     // Calling .Q.chk once here (vs once per chunk in loadChunk) avoids O(N*P) I/O
@@ -430,7 +445,8 @@ runLoader:{[]
     // Error-trapped: mixed-schema HDBs (pre-dataset partitions alongside new ones)
     // can cause .Q.chk to signal 'type; treat as a non-fatal warning.
     @[.Q.chk; HDB_DIR;
-      {[e] .lg.o[`loader;".Q.chk warning (schema mismatch in old partitions): ",e]}];
+      {[e] -2 "LOADER WARNING: .Q.chk failed — HDB may have missing placeholder tables: ",e;
+           .lg.e[`loader;".Q.chk error (schema mismatch in old partitions): ",e]}];
 
     // Best-effort: tell a running grad_hdb process to reload new partitions.
     // Port is read from KDBHDBPORT (default 6010, matching config/process.csv).

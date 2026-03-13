@@ -288,10 +288,13 @@ def estimate_cost(client: db.Historical, dataset: str, symbols: list[str],
             start=start, end=end, stype_in=stype_in,
         ))
     except db.BentoError as exc:
-        # Databento API errors (e.g. unknown dataset, bad symbol) — log and
-        # disable the safeguard so the caller can decide whether to proceed.
-        log.warning(_j(f"Cost estimation API error (safeguard disabled): {exc}"))
-        return 0.0
+        # Databento API errors (e.g. unknown dataset, bad symbol) — raise so the
+        # caller is never left without a cost guard. Fix the dataset/symbol and retry.
+        raise RuntimeError(
+            f"Cost estimation failed: {exc}. "
+            "Cannot submit without cost data — fix the dataset/symbol and retry, "
+            "or set BACKFILL_MAX_COST_USD=0 to disable the guard explicitly."
+        ) from exc
     except Exception as exc:
         # Unexpected errors (network timeout, SDK bug, etc.) — re-raise so
         # the caller is not silently left without a cost guard.
@@ -465,6 +468,29 @@ def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
 # q loader invocation
 # ---------------------------------------------------------------------------
 
+def _acquire_lock_with_timeout(fh, timeout_s: int = 300) -> None:
+    """Acquire an exclusive flock with a timeout.
+
+    Uses LOCK_NB (non-blocking) with a retry loop so a hung or crashed process
+    that holds the lock does not cause this process to block indefinitely.
+    Raises RuntimeError if the lock cannot be acquired within timeout_s seconds.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Could not acquire q loader lock within {timeout_s}s. "
+                    "Another process may be holding it, or a previous run crashed "
+                    f"while holding the lock. Delete the stale lock file to recover: "
+                    f"{fh.name}"
+                )
+            time.sleep(5)
+
+
 def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
     hdb_dir = os.environ.get("KDBHDB", str(package_home / "hdb"))
     loader_script = package_home / "code" / "backfill" / "loader.q"
@@ -480,7 +506,7 @@ def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fh = open(lock_path, "w")
     try:
-        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        _acquire_lock_with_timeout(lock_fh, timeout_s=300)
         _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home)
     finally:
         fcntl.flock(lock_fh, fcntl.LOCK_UN)
@@ -575,8 +601,12 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
     if record and record.status in ("downloaded", "failed") and record.file_paths:
         csv_path = Path(record.file_paths[0])
         if csv_path.exists():
-            checksum_ok = (not record.checksum
-                           or sha256_of_file(csv_path) == record.checksum)
+            # If no checksum was stored it means the previous run crashed during
+            # download before the file was fully written.  Treat a missing checksum
+            # the same as a mismatch: re-download rather than trusting a potentially
+            # partial file.
+            checksum_ok = (bool(record.checksum)
+                           and sha256_of_file(csv_path) == record.checksum)
             if not checksum_ok:
                 log.warning(_j(
                     f"Chunk {chunk.chunk_id}: checksum mismatch on resume "
