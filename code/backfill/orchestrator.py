@@ -241,8 +241,9 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
     d = start
     while d <= end:
         date_str = d.strftime("%Y.%m.%d")
-        for sym_idx, sym in enumerate(symbols):
-            chunk_id = f"{request_id}_{date_str}_s{sym_idx:03d}"
+        for sym in symbols:
+            safe_sym = re.sub(r"[^A-Za-z0-9]", "_", sym)
+            chunk_id = f"{request_id}_{date_str}_{safe_sym}"
             chunks.append(Chunk(
                 request_id=request_id,
                 chunk_id=chunk_id,
@@ -731,6 +732,8 @@ def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
 
     succeeded = 0
     failed = 0
+    total = len(chunks)
+    done = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_work, chunk): chunk for chunk in chunks}
         for future in as_completed(futures):
@@ -740,10 +743,16 @@ def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
             except Exception as exc:
                 log.error(_j(f"Chunk {chunk.chunk_id} raised unexpected exception: {exc}"))
                 ok = False
+            done += 1
             if ok:
                 succeeded += 1
             else:
                 failed += 1
+            status = "ok" if ok else "FAIL"
+            sym = chunk.symbols[0] if chunk.symbols else chunk.chunk_id
+            print(f"\r  [{done}/{total}] {sym} {chunk.date} — {status}    ",
+                  end="", flush=True)
+    print()  # newline after progress line
     return succeeded, failed
 
 

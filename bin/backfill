@@ -1,0 +1,26 @@
+#!/bin/bash
+# bin/backfill — single entrypoint for the Databento backfill pipeline.
+#
+# Usage (from any directory):
+#   /path/to/grad-project/bin/backfill --symbols AAPL,MSFT --start 2024-01-15 --end 2024-01-17
+#   /path/to/grad-project/bin/backfill --status
+#   /path/to/grad-project/bin/backfill --dry-run --symbols AAPL --start 2024-01-15 --end 2024-01-15
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV="$PROJECT_DIR/../venv"
+
+# Load environment (sets TORQHOME, KDBHDB, STAGING_DIR, DATABENTO_API_KEY, etc.)
+source "$PROJECT_DIR/setenv.sh"
+
+# Activate Python venv
+if [[ -f "$VENV/bin/activate" ]]; then
+    source "$VENV/bin/activate"
+else
+    echo "ERROR: Python venv not found at $VENV — run scripts/setup_python.sh first" >&2
+    exit 1
+fi
+
+exec python "$PROJECT_DIR/code/backfill/orchestrator.py" "$@"

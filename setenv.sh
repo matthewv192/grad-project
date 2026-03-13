@@ -24,12 +24,8 @@ export TORQPROCESSES="$KDBAPPCONFIG/process.csv"
 export KDBLOG="$PACKAGEHOME/logs"
 export STAGING_DIR="$PACKAGEHOME/staging"
 
-# Databento API key — must be set in the caller's environment before sourcing.
-# e.g.: export DATABENTO_API_KEY="db-..." before running source setenv.sh
-if [[ -z "${DATABENTO_API_KEY:-}" ]]; then
-    echo "WARNING: DATABENTO_API_KEY is not set. Set it before running backfills." >&2
-fi
-export DATABENTO_API_KEY="${DATABENTO_API_KEY:-}"
+# Databento API key
+export DATABENTO_API_KEY="db-afYQDhMym3h5fEcEkjvCRaGgw9GwC"
 
 # Inherit TorQ's library paths
 export KDBLIB="${TORQHOME}/lib"
