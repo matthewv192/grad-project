@@ -98,9 +98,9 @@ Partitioned by `date`, splayed tables sorted by `` `sym`time `` within each part
 
 | Component | Responsibility |
 |---|---|
-| `ref_ingest.py` | Generate synthetic security master, corp actions, and adj factor CSVs |
+| `ref_ingest.py` | Fetch real corp actions and dividends via yfinance; compute daily cumulative adjustment factors; called automatically after each backfill. `--synthetic` flag available for CI/offline use. |
 | `ref_tables.q` | Load reference CSVs into in-memory tables; `resolveSymbol()` / `resolveInstrumentId()` for point-in-time lookups |
-| `adjlib.q` | `applyAdj()` applies split/dividend factors; `getAdjustedClose()` returns OHLCV + `adj_close` column in `backward` (post-split) or `forward` (pre-split) terms |
+| `adjlib.q` | `applyAdj()` applies split/dividend factors; `getAdjustedClose()` returns OHLCV + `adj_close` in `backward` or `forward` terms with optional `asOf` timestamp for point-in-time factor selection |
 
 ---
 

@@ -225,7 +225,7 @@ Loads static reference data CSVs into in-memory kdb+ tables:
 
 - `ref_security_master` — maps symbols to instrument IDs, exchanges, currencies
 - `ref_corp_actions` — stock splits, dividends, mergers (used for price adjustment)
-- `ref_adj_factors` — pre-computed cumulative adjustment factors per symbol per date
+- `ref_adj_factors` — cumulative adjustment factors per symbol per date, with a `loaded_at` timestamp on each row so multiple revisions can coexist (point-in-time queries)
 - `ref_symbology_map` — auto-populated by the loader: maps Databento instrument IDs to normalised symbols
 
 The `resolveSymbol` and `resolveInstrumentId` functions use kdb+'s `aj` (asof join) semantics — finding the correct mapping as of a given date — which handles the fact that ticker symbols and instrument IDs can change over time.
@@ -241,6 +241,8 @@ Applies corporate action adjustments to OHLCV data so that a stock split doesn't
 **Two adjustment methods:**
 - `backward` — all prices in current (post-split) terms. The standard for most quant use cases.
 - `forward` — all prices in historical terms. Useful when you need to match raw historical records.
+
+**Point-in-time factor selection:** `getAdjustedClose` takes an optional fifth `asOf` timestamp. When provided, only factor rows where `loaded_at <= asOf` are used, and the most recent revision within that window is selected per `(sym, date)`. Pass `0Np` (null) to use the latest available revision. This prevents look-ahead bias in backtesting — a factor revision ingested in February won't affect a simulation that was run in January.
 
 **Key function:** `applyAdj` uses a left join (`lj`) to attach the adjustment factor to each bar by `(sym, date)`, fills missing factors with 1.0 (no adjustment), then applies the multiplication/division vectorially across the whole table in one pass.
 

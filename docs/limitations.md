@@ -10,11 +10,11 @@ The following components are implemented but use synthetic data. They must be re
 
 | Component | Current State | What to Replace |
 |---|---|---|
-| `ref_ingest.py` | Generates synthetic security master, corp actions, and adj factor CSVs for five test symbols | Integrate a real data provider (Bloomberg, Refinitiv, etc.) |
+| `ref_ingest.py` | Fetches real corp actions and dividends via yfinance; called automatically after each backfill. Security master is still a stub (no free provider) — populated with placeholders. `--synthetic` flag available for CI/offline use. | Replace security master with a real provider (Bloomberg, Refinitiv, etc.) |
 | `ref_tables.q` | Reads from CSV files; no live feed | Sufficient for batch backfill; add a real-time source for production |
-| `adjlib.q` | `backward` and `forward` adjustment methods are implemented and tested against synthetic factors | Factors must be sourced from a real corporate actions provider for production use |
+| `adjlib.q` | `backward` and `forward` adjustment methods with point-in-time `asOf` filtering; factors sourced from yfinance via `ref_ingest.py` | yfinance coverage may be incomplete for older history or non-US securities |
 
-> **Important:** `ref_ingest.py` assigns `instrument_id` values starting at 1000 for its test symbols. Real Databento instrument IDs are exchange-assigned integers that differ. Using the stub reference data alongside real backfill output will cause `resolveSymbol` / `resolveInstrumentId` lookups to return null for all real instruments.
+> **Important:** `ref_ingest.py` assigns `instrument_id` values starting at 1000 for its stub security master entries. Real Databento instrument IDs are exchange-assigned integers that differ. Using the stub security master alongside real backfill output will cause `resolveSymbol` / `resolveInstrumentId` lookups to return null for all real instruments.
 
 ---
 
