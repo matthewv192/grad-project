@@ -160,7 +160,7 @@ processManifests:{[stagingPath]
     toProcess:validParsed processIdx;
 
     // Grouping by date and schema
-    grouped:group toProcess{x[`date],x[`schema]};
+    grouped:group {x[`date],x[`schema]} each toProcess;
     batches:toProcess value grouped;
 
     results:@[loadChunkBatch;;{[e] .lg.o[`manifest;"load batch error: ",e]; 0j}] each batches;

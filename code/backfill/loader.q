@@ -329,6 +329,10 @@ loadChunkBatch:{[manifests]
         :0j
     ];
 
+    // Sort before quality checks so ordering check reflects write order,
+    // not CSV-read order (multi-exchange batches arrive unsorted by design).
+    raw:update date:partDate from `sym`time xasc delete date from delete chunk_id from raw;
+
     // Data quality checks on the freshly loaded table batch
     qResult:.[runQualityChecks; (raw; schema; partDate);
           {[e] .lg.e[`loader;"quality check error: ",e];
@@ -339,10 +343,6 @@ loadChunkBatch:{[manifests]
         {[m;msg] updateJobRecord[m`chunk_id; `loaded; msg]; updateJobRecord[m`chunk_id; `failed; "quality checks failed"]} [;msg] each validPending;
         :0j
     ];
-
-    // Proceed to dump to HDB
-    raw:delete chunk_id from raw;
-    raw:update date:partDate from `sym`time xasc delete date from raw;
 
     lockDir:acquireWriteLock[partDateDir;schema];
 
@@ -377,8 +377,8 @@ loadChunkBatch:{[manifests]
         rowCount:m`row_count;
         dataset:m`exchange;
         
-        updateJobRecord[chunkId; `verified; ""];
         updateJobRecord[chunkId; `loaded; ""];
+        updateJobRecord[chunkId; `verified; ""];
         
         if[count times; @[updateJobRecordTimestamps; (chunkId; min times; max times); {[e] }]];
         
