@@ -227,28 +227,28 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
                     end: date, chunk_size: int, schema: str,
                     dataset: str, stype_in: str = "raw_symbol") -> list[Chunk]:
     """
-    Split a backfill request into one-day × one-symbol-batch chunks.
+    Split a backfill request into one-day × one-symbol × one-exchange chunks.
 
-    For a 3-day request with 25 symbols and chunk_size=10, this produces
-    3 × 3 = 9 chunks: each day gets batches [0:10], [10:20], [20:25].
+    For a 3-day request with 4 symbols this produces 3 × 4 = 12 chunks.
+    Each chunk maps to exactly one Databento batch job, giving the finest
+    possible retry granularity (a single symbol/day failure doesn't affect
+    any other symbol or day).
 
-    Keeping one day per chunk keeps the Databento job small and lets the
-    retry logic target exactly the day+batch that failed.
+    The chunk_size parameter is no longer used for batching but is kept in
+    the signature so existing CLI calls (--chunk-size) don't break.
     """
     chunks = []
     d = start
     while d <= end:
         date_str = d.strftime("%Y.%m.%d")
-        for batch_idx in range(0, len(symbols), chunk_size):
-            batch = symbols[batch_idx: batch_idx + chunk_size]
-            batch_num = batch_idx // chunk_size
-            chunk_id = f"{request_id}_{date_str}_b{batch_num:03d}"
+        for sym_idx, sym in enumerate(symbols):
+            chunk_id = f"{request_id}_{date_str}_s{sym_idx:03d}"
             chunks.append(Chunk(
                 request_id=request_id,
                 chunk_id=chunk_id,
                 dataset=dataset,
                 schema=schema,
-                symbols=batch,
+                symbols=[sym],
                 date=d,
                 stype_in=stype_in,
             ))

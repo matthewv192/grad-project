@@ -31,9 +31,13 @@ The `--dataset` CLI flag sets the dataset for a single orchestrator run. Multipl
 
 ## Chunking
 
+Each chunk is one symbol × one exchange × one day — the finest granularity
+Databento supports. This means a single symbol/day failure never blocks any
+other symbol or day.
+
 | Setting | Env var | Default | Description |
 |---|---|---|---|
-| `BACKFILL_CHUNK_SIZE` | `BACKFILL_CHUNK_SIZE` | `10` | Symbols per Databento batch job. Smaller = finer-grained retry granularity, more API jobs. |
+| `BACKFILL_CHUNK_SIZE` | `BACKFILL_CHUNK_SIZE` | `10` | Retained for CLI compatibility; no longer controls batch size (chunks are always 1 symbol per job). |
 
 ---
 
