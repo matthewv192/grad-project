@@ -53,11 +53,6 @@ pip install -e .
 
 ```bash
 cd ~/grad-project
-
-# Set your Databento API key before sourcing
-export DATABENTO_API_KEY="db-XXXXXXXXXXXXXXXXXXXX"
-
-# Load all environment variables and activate the venv
 source setenv.sh
 ```
 
@@ -68,14 +63,14 @@ PACKAGEHOME = /home/<user>/grad-project
 KDBHDB      = /home/<user>/grad-project/hdb
 ```
 
-`setenv.sh` sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and activates the venv if it exists at `../venv`.
+`setenv.sh` sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and the Databento API key. The `bin/backfill` entrypoint sources it automatically — manual sourcing is only needed for interactive q sessions.
 
 ---
 
 ## 4. Run a dry run (no API calls)
 
 ```bash
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" \
     --start 2024-01-17 \
     --end 2024-01-17 \
@@ -90,21 +85,21 @@ This prints a cost estimate and chunk plan without submitting any Databento jobs
 ## 5. Run a real backfill
 
 ```bash
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" \
     --start 2024-01-17 \
     --end 2024-01-17 \
     --schema ohlcv-1m
 ```
 
-Downloaded CSVs are staged in `staging/<chunk_id>/` (one directory per chunk). Manifests are written to `staging/metadata/manifests/`. The q loader is invoked automatically to write data into the HDB.
+Downloaded CSVs are staged in `staging/<chunk_id>/` (one directory per chunk, named by symbol and date). Manifests are written to `staging/metadata/manifests/`. The q loader is invoked automatically to write data into the HDB.
 
 ---
 
 ## 6. Load from a second exchange into the same partition
 
 ```bash
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" \
     --start 2024-01-17 \
     --end 2024-01-17 \

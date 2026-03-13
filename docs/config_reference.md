@@ -85,12 +85,12 @@ Python logging uses JSON format on stdout and is also written to a file in `logs
 
 Redirect stdout to `logs/` if you also want console output captured:
 ```bash
-./scripts/request_backfill.sh ... >> logs/backfill.log 2>&1
+./bin/backfill ... >> logs/backfill.log 2>&1
 ```
 
 ---
 
-## CLI Flags (orchestrator.py / request_backfill.sh)
+## CLI Flags (bin/backfill / orchestrator.py)
 
 | Flag | Required | Description |
 |---|---|---|
@@ -99,7 +99,7 @@ Redirect stdout to `logs/` if you also want console output captured:
 | `--end` | Yes | End date `YYYY-MM-DD` (inclusive) |
 | `--schema` | No | `trades` or `ohlcv-1m` (default: `trades`) |
 | `--dataset` | No | Databento dataset identifier (default: `XNAS.ITCH`). The dataset name is stored as the `exchange` column in the HDB. |
-| `--chunk-size` | No | Symbols per chunk (default: `10`) |
+| `--chunk-size` | No | Retained for CLI compatibility; chunks are always 1 symbol per job |
 | `--workers` | No | Parallel chunk workers (default: `12`). Each worker runs the full submit→poll→download pipeline for one chunk concurrently. |
 | `--request-id` | No | Override auto-generated ID. If a record already exists with different parameters the run aborts; matching parameters are treated as an idempotent resume. |
 | `--retry-failed` | No | Only retry `failed` chunks from the job store |
@@ -119,7 +119,7 @@ Each downloaded chunk produces a manifest file in `staging/metadata/manifests/`.
 | Key | Type | Description |
 |---|---|---|
 | `request_id` | string | Orchestrator run identifier |
-| `chunk_id` | string | Unique per (request, date, batch) |
+| `chunk_id` | string | Unique per (request, date, symbol) — format: `<request_id>_<YYYY.MM.DD>_<SYM>` |
 | `databento_job_id` | string | Databento job reference |
 | `exchange` | string | Databento dataset (e.g. `XNAS.ITCH`) — becomes the `exchange` column in the HDB |
 | `schema` | string | `trades` or `ohlcv-1m` |
@@ -139,7 +139,7 @@ Each chunk has a persistent record in `staging/metadata/jobs/`. Updated at every
 
 | Key | Type | Description |
 |---|---|---|
-| `chunk_id` | string | Unique chunk identifier |
+| `chunk_id` | string | Unique per (request, date, symbol) — format: `<request_id>_<YYYY.MM.DD>_<SYM>` |
 | `request_id` | string | Parent request identifier |
 | `databento_job_id` | string | Databento batch job ID (set after submit) |
 | `dataset` | string | Databento dataset, e.g. `XNAS.ITCH` |

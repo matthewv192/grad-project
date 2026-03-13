@@ -54,7 +54,7 @@ hdb/
 ```
 
 **4. Key Scripts**
-- **Shell**: `request_backfill.sh`, `backfill_status.sh`
+- **Shell**: `bin/backfill` (entrypoint — sources env, activates venv, calls orchestrator)
 - **Python**: `orchestrator.py` (API client, cost control)
 - **q**: `loader.q`, `manifest.q`, `quality.q`, `adjlib.q`
 - **Reference**: `ref_ingest.py`, `ref_tables.q`

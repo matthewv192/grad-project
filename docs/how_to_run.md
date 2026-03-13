@@ -41,16 +41,7 @@ source ../venv/bin/activate
 pip install -e .
 ```
 
-### 3. Set your API key
-
-```bash
-export DATABENTO_API_KEY="db-XXXXXXXXXXXXXXXXXXXX"
-```
-
-> The key must be exported **before** sourcing `setenv.sh`. It can also be set
-> permanently in your shell profile (`~/.bashrc` / `~/.zshrc`).
-
-### 4. Source the environment
+### 3. Verify the environment
 
 ```bash
 source setenv.sh
@@ -64,19 +55,20 @@ PACKAGEHOME = /home/<user>/grad-project
 KDBHDB      = /home/<user>/grad-project/hdb
 ```
 
-This sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and activates
-the venv if it exists at `../venv`.
+`setenv.sh` sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and the
+Databento API key. The `bin/backfill` entrypoint sources it automatically on
+every run, so you only need to source it manually for interactive q sessions.
 
 ---
 
 ## Running a Backfill
 
-All commands are run from inside `grad-project/`.
+All commands use `bin/backfill`, which handles environment setup automatically.
 
 ### Request data
 
 ```bash
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT,GOOG" \
     --start 2024-06-03 \
     --end 2024-06-07 \
@@ -92,24 +84,21 @@ All commands are run from inside `grad-project/`.
 | `--end` | _(required)_ | End date, inclusive (YYYY-MM-DD) |
 | `--schema` | `trades` | `trades` or `ohlcv-1m` |
 | `--dataset` | `XNAS.ITCH` | Databento dataset identifier |
-| `--chunk-size` | `10` | Symbols per batch job |
+| `--workers` | `12` | Parallel chunk workers |
 | `--dry-run` | off | Print cost estimate only; no API calls |
 | `--download-only` | off | Download and stage CSVs; skip the q loader |
 | `--load-only` | off | Skip API calls; run the q loader on existing staged manifests |
 | `--metrics` | off | Print per-chunk timing metrics and exit |
 
-The script:
-1. Sources `setenv.sh` and activates the venv
-2. Calls `orchestrator.py` which submits one Databento job per (day × symbol-batch)
-3. Polls until each job is done, downloads the CSV, writes a JSON manifest
-4. Invokes the q loader to write data into `hdb/`
-
-Progress is logged to stdout in JSON format.
+`bin/backfill` sources `setenv.sh` and activates the venv automatically. It
+submits one Databento job per symbol per day, running up to 12 in parallel.
+A live progress line updates in the terminal as chunks complete, followed by
+a summary table of rows loaded per exchange on success.
 
 ### Dry run (cost estimate, no API calls)
 
 ```bash
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" \
     --start 2024-06-03 \
     --end 2024-06-07 \
@@ -119,13 +108,13 @@ Progress is logged to stdout in JSON format.
 ### Check progress
 
 ```bash
-./scripts/backfill_status.sh
+./bin/backfill --status
 ```
 
 Filter to a specific request:
 
 ```bash
-./scripts/backfill_status.sh --request-id req_20240603_120000_abc123
+./bin/backfill --status --request-id req_20240603_120000_abc123
 ```
 
 ### Retry failures
@@ -133,7 +122,7 @@ Filter to a specific request:
 If any chunks show `failed` in the status output:
 
 ```bash
-./scripts/retry_failed.sh
+./bin/backfill --retry-failed
 ```
 
 ---
@@ -141,7 +130,7 @@ If any chunks show `failed` in the status output:
 ## Requesting OHLCV Data
 
 ```bash
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL" \
     --start 2024-06-03 \
     --end 2024-06-05 \
@@ -159,17 +148,17 @@ Run a separate backfill per dataset; each load appends its rows to the existing 
 
 ```bash
 # Load NASDAQ data
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" --start 2024-01-17 --end 2024-01-17 \
     --schema ohlcv-1m --dataset XNAS.ITCH
 
 # Add NYSE data to the same partition
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" --start 2024-01-17 --end 2024-01-17 \
     --schema ohlcv-1m --dataset XNYS.PILLAR
 
 # Add IEX data
-./scripts/request_backfill.sh \
+./bin/backfill \
     --symbols "AAPL,MSFT" --start 2024-01-17 --end 2024-01-17 \
     --schema ohlcv-1m --dataset IEXG.TOPS
 ```
@@ -316,7 +305,6 @@ python3 -m pytest tests/test_metrics.py -v
 |---------|-------|-----|
 | `LD_LIBRARY_PATH: unbound variable` | `set -u` with unset var | Already fixed — `setenv.sh` uses `${LD_LIBRARY_PATH:-}` |
 | `TORQHOME = ` (empty) | `setenv.sh` sourced before `cd grad-project` | Always source from inside `grad-project/` |
-| `DATABENTO_API_KEY is not set` | Key not exported | `export DATABENTO_API_KEY="db-..."` before sourcing |
 | `q loader exited 1` | q can't find `schema/schema.q` | Ensure you're running from inside `grad-project/` |
 | `write lock held for ...` | Stale lock from a crashed run | Run `find hdb -name ".*.lock" -type d -exec rmdir {} +` then reset the chunk status to `downloaded` in `staging/metadata/jobs/` |
 | `ValueError: Cannot infer date from filename` | Databento changed filename format | Check the downloaded CSV filename; report the new pattern to update the regex |
@@ -324,4 +312,4 @@ python3 -m pytest tests/test_metrics.py -v
 | `Job ... failed at Databento` | Databento rejected or failed the batch job | Check the error detail in the log; run `retry_failed.sh` after the cause is resolved |
 | Chunk shows `failed` in status | API error or cost limit hit | Run `retry_failed.sh`; inspect error in `staging/metadata/jobs/` |
 | Old stale manifest causes validation error | CSV file deleted but manifest remains | Safe to ignore — logged as a warning, does not block other chunks |
-| `ModuleNotFoundError: No module named 'databento'` | venv not activated | Run `source ../venv/bin/activate` or `source setenv.sh` first |
+| `ModuleNotFoundError: No module named 'databento'` | venv not found | Run `scripts/setup_python.sh` to create the venv, then retry |
