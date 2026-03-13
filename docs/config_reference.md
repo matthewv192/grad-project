@@ -1,16 +1,18 @@
 # Configuration Reference
 
-All settings live in `config/settings.q` and can be overridden by environment variables set before `setenv.sh` is sourced.
+Pipeline parameters (dataset, schema, chunk size, cost limit, retries) are controlled by environment variables read directly by `orchestrator.py`. The only q-side configuration is `STAGING_DIR` and `KDBHDB`, set in `setenv.sh`.
 
 ---
 
 ## Databento / Dataset
 
-| Setting (q var) | Env var | Default | Description |
+Dataset and schema are specified per-run via CLI flags (see [CLI Flags](#cli-flags-orchestratorpy--request_backfillsh) below). Defaults apply when the flags are omitted.
+
+| Parameter | CLI flag | Default | Description |
 |---|---|---|---|
-| `BACKFILL_DATASET` | — | `XNAS.ITCH` | Default Databento dataset identifier (overridden per-run by `--dataset`) |
-| `BACKFILL_DEFAULT_SCHEMA` | — | `trades` | Schema used when `--schema` not specified |
-| `BACKFILL_SCHEMAS` | — | `` `trades`ohlcv_1m `` | Schemas considered valid (validation only) |
+| Dataset | `--dataset` | `XNAS.ITCH` | Databento dataset identifier |
+| Schema | `--schema` | `trades` | `trades` or `ohlcv-1m` |
+| Symbol type | `--stype-in` | `raw_symbol` | Databento symbol type (`raw_symbol`, `continuous`, `instrument_id`) |
 
 Supported dataset/schema combinations (tested):
 
@@ -69,11 +71,15 @@ Backoff: `min(2^retries, 60)` seconds between attempts (1s, 2s, 4s, …, capped 
 
 ## Logging
 
-| Setting | Env var | Default | Description |
-|---|---|---|---|
-| `BACKFILL_LOG_LEVEL` | — | `1` (INFO) | TorQ log level: 0=DEBUG 1=INFO 2=WARN 3=ERROR |
+Python logging uses JSON format on stdout and is also written to a file in `logs/` for every run:
 
-Python logging uses JSON format on stdout. Redirect to `logs/` if needed:
+| Mode | Log file |
+|---|---|
+| Normal backfill | `logs/<request_id>.log` |
+| `--retry-failed` | `logs/retry_<timestamp>.log` |
+| `--load-only` | `logs/load_only_<timestamp>.log` |
+
+Redirect stdout to `logs/` if you also want console output captured:
 ```bash
 ./scripts/request_backfill.sh ... >> logs/backfill.log 2>&1
 ```
@@ -147,20 +153,18 @@ Each chunk has a persistent record in `staging/metadata/jobs/`. Updated at every
 | `min_ts` / `max_ts` | string | Actual timestamp range written to HDB (set by q loader) |
 | `created_at` / `updated_at` | string | ISO 8601 timestamps |
 
-### Querying the job store from q
+### Querying the job store from the CLI
 
-```q
-\l code/backfill/manifest.q
-jobsDir: hsym `$ getenv[`STAGING_DIR], "/metadata/jobs"
-showJobsTable jobsDir
+```bash
+# Summary of all requests
+python code/backfill/orchestrator.py --status
+
+# Filter to a specific request
+python code/backfill/orchestrator.py --status --request-id req_20240603_120000_abc123
 ```
 
-Returns a typed kdb+ table with one row per job record, suitable for filtering and aggregation:
+Job store JSON files in `staging/metadata/jobs/` are plain text and can be inspected directly:
 
-```q
-/ All failed chunks with their failure category
-select chunk_id, failure_type, error_msg from showJobsTable[jobsDir] where status=`failed
-
-/ Count by status
-select count i by status from showJobsTable[jobsDir]
+```bash
+cat staging/metadata/jobs/<chunk_id>.json
 ```

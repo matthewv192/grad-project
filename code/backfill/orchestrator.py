@@ -859,6 +859,9 @@ def main(argv=None):
 
     # ---- Load-only mode: run q loader on whatever manifests already exist ----
     if args.load_only:
+        run_id = (args.request_id
+                  or f"load_only_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
+        _add_file_logging(PACKAGE_HOME / "logs", run_id)
         manifest_dir = STAGING_DIR / "metadata" / "manifests"
         log.info(_j("load-only mode: running q loader on existing manifests"))
         try:
@@ -883,6 +886,9 @@ def main(argv=None):
         if not failed:
             log.info(_j("No failed chunks to retry."))
             return
+        retry_id = (args.request_id
+                    or f"retry_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
+        _add_file_logging(PACKAGE_HOME / "logs", retry_id)
         log.info(_j(f"Retrying {len(failed)} failed chunk(s)"))
 
         retry_chunks = []
