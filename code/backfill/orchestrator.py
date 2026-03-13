@@ -513,6 +513,37 @@ def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
         lock_fh.close()
 
 
+def _run_ref_ingest(symbols: list[str], start: date, end: date) -> None:
+    """Invoke ref_ingest.py for the given symbols/range after a successful load.
+
+    Best-effort: failures are logged as warnings and never abort the backfill.
+    The market data is already in the HDB; reference data is supplementary.
+    """
+    script = PACKAGE_HOME / "code" / "reference" / "ref_ingest.py"
+    if not script.exists():
+        log.warning(_j("ref_ingest.py not found — skipping reference data update"))
+        return
+    cmd = [
+        sys.executable, str(script),
+        "--symbols", ",".join(symbols),
+        "--start", str(start),
+        "--end", str(end),
+    ]
+    env = {**os.environ, "STAGING_DIR": str(STAGING_DIR)}
+    log.info(_j(f"Updating reference data: symbols={symbols} range={start}..{end}"))
+    result = subprocess.run(
+        cmd, capture_output=True, text=True,
+        cwd=str(PACKAGE_HOME), env=env,
+    )
+    for line in result.stdout.splitlines():
+        log.info(_j(f"[ref_ingest] {line}"))
+    if result.returncode != 0:
+        log.warning(_j(
+            f"ref_ingest exited {result.returncode} — "
+            "reference data may be incomplete (market data load was successful)"
+        ))
+
+
 def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
                          hdb_dir: str, torq_home: str) -> None:
     # Pipe q commands via stdin so we can load the script then call runLoader[].
@@ -1034,6 +1065,11 @@ def main(argv=None):
             except Exception as exc:
                 log.error(_j(f"q loader failed: {exc}"))
                 sys.exit(1)
+            # ---- Update reference data for retried symbols/range ----
+            retry_syms = sorted({s for c in retry_chunks for s in c.symbols})
+            retry_start = min(c.date for c in retry_chunks)
+            retry_end = max(c.date for c in retry_chunks)
+            _run_ref_ingest(retry_syms, retry_start, retry_end)
 
         # ---- Terminal summary for retry run ----
         retry_ids = {c.request_id for c in retry_chunks}
@@ -1130,6 +1166,8 @@ def main(argv=None):
         except Exception as exc:
             log.error(_j(f"q loader failed: {exc}"))
             sys.exit(1)
+        # ---- Update reference data (corp actions + adj factors) ----
+        _run_ref_ingest(symbols, start, end)
 
     # Emit metrics summary for this request
     summary_path = write_summary(STAGING_DIR, request_id, wall_s=_wall_s)
