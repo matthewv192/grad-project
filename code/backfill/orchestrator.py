@@ -906,8 +906,8 @@ def parse_args(argv=None):
                         help="Skip API calls; run q loader on existing manifests only")
     parser.add_argument("--metrics", action="store_true",
                         help="Print per-chunk timing metrics and exit")
-    parser.add_argument("--workers", type=int, default=4,
-                        help="Maximum parallel chunk workers (default: 4)")
+    parser.add_argument("--workers", type=int, default=12,
+                        help="Maximum parallel chunk workers (default: 12)")
     parser.add_argument("--stype-in", default="raw_symbol",
                         help="Databento symbol type for submit/cost calls "
                              "(default: raw_symbol)")

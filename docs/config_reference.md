@@ -100,7 +100,7 @@ Redirect stdout to `logs/` if you also want console output captured:
 | `--schema` | No | `trades` or `ohlcv-1m` (default: `trades`) |
 | `--dataset` | No | Databento dataset identifier (default: `XNAS.ITCH`). The dataset name is stored as the `exchange` column in the HDB. |
 | `--chunk-size` | No | Symbols per chunk (default: `10`) |
-| `--workers` | No | Parallel chunk workers (default: `4`). Each worker runs the full submit→poll→download pipeline for one chunk concurrently. |
+| `--workers` | No | Parallel chunk workers (default: `12`). Each worker runs the full submit→poll→download pipeline for one chunk concurrently. |
 | `--request-id` | No | Override auto-generated ID. If a record already exists with different parameters the run aborts; matching parameters are treated as an idempotent resume. |
 | `--retry-failed` | No | Only retry `failed` chunks from the job store |
 | `--status` | No | Print a summary of all job statuses and exit; combine with `--request-id` to filter to one request |
