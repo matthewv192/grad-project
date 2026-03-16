@@ -23,6 +23,11 @@ The following components are implemented but use synthetic data. They must be re
 ### Empty CSV files are not written to the HDB
 When Databento returns a zero-row CSV (e.g. a public holiday, trading halt, or no activity for the requested symbol), `loadChunkBatch` logs a warning and returns without writing to the HDB. The `.Q.chk` call at the end of `runLoader` will create an empty placeholder directory for the missing table, but the partition date itself is not created. Queries that span a date range will see gaps rather than empty rows for those dates.
 
+The chunk is still marked `verified` in the job store, so `--status` will show it as successful. There is no distinct status for "completed but empty" — a clean status display does not guarantee data exists in the HDB for that date.
+
+### No post-write row count verification
+Python counts rows in the downloaded CSV and stores that count in the manifest. The q loader checks that the parsed row count matches the manifest before writing. However, after `.Q.dpft` writes the partition to disk, the actual row count on disk is never re-verified. A partial write caused by a filesystem error during `.Q.dpft` would not be detected and the chunk would still be marked `verified`.
+
 ### Quality checks run on in-memory data only
 `runQualityChecks` in `quality.q` checks the freshly-read data before it is written to disk. Empty placeholder rows added by `.Q.chk` are not quality-checked.
 
@@ -72,6 +77,22 @@ Each chunk is one symbol × one exchange × one day. A request for 100 symbols o
 
 ### Python-side flock only prevents conflicts on a single machine
 The `fcntl.flock` call in `run_q_loader` (in `orchestrator.py`) prevents two concurrent loader invocations from the same Python process on the same host. It does not prevent two separate machines from writing to the same HDB simultaneously.
+
+---
+
+## Adjustment Factors
+
+### Factors are only updated for recently-backfilled symbols
+`ref_ingest.py` runs automatically after each backfill, but only fetches and updates factors for the symbols included in that request. If a symbol was last backfilled months ago and a corporate action has occurred since, its adjustment factors will not be updated until it appears in a new backfill request. There is no background process that keeps factors current for all symbols in the HDB.
+
+To manually refresh factors for a symbol without downloading new market data:
+```bash
+source ../venv/bin/activate
+python code/reference/ref_ingest.py --symbols AAPL --start 2020-01-01 --end $(date +%Y-%m-%d)
+```
+
+### Adjustment factor gaps between non-contiguous backfill windows
+Factors are only computed and stored for dates that appear in the HDB or the current backfill request. If you backfill a symbol for two separate date ranges with a gap between them (e.g. Jan 1–5 and Jun 1–5), there will be no adjustment factor rows for the dates in between. A query spanning that gap will silently use `cumulative_factor=1.0` for the missing dates, which is only correct if no corporate actions occurred in the gap period. A split during the gap would produce wrong adjusted prices for those dates with no warning.
 
 ---
 
