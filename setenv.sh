@@ -24,7 +24,7 @@ export TORQPROCESSES="$KDBAPPCONFIG/process.csv"
 export KDBLOG="$PACKAGEHOME/logs"
 export STAGING_DIR="$PACKAGEHOME/staging"
 
-# Databento API key
+# Databento API key — EDIT ME: replace with your own key from https://app.databento.com/portal/keys
 export DATABENTO_API_KEY="db-afYQDhMym3h5fEcEkjvCRaGgw9GwC"
 
 # Inherit TorQ's library paths

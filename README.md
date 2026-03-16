@@ -10,36 +10,101 @@ a kdb+ HDB. Supports multiple exchanges in the same HDB partition.
 
 ## Quick Start
 
-```bash
-export DATABENTO_API_KEY="your-key-here"
-source setenv.sh
+**Step 1 — Clone repos side-by-side:**
 
-# Dry run (estimate cost, no API calls)
-./scripts/request_backfill.sh \
+```bash
+git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ
+git clone <this-repo> ~/grad-project
+```
+
+**Step 2 — Install Python dependencies:**
+
+```bash
+cd ~/grad-project
+./scripts/setup_python.sh
+```
+
+**Step 3 — Add your Databento API key:**
+
+Open `setenv.sh` and replace the placeholder on the marked line with your key:
+
+```bash
+nano setenv.sh          # look for the line marked "EDIT ME"
+```
+
+Your key starts with `db-` and can be found at <https://app.databento.com/portal/keys>.
+
+**Step 4 — Dry run (no API calls, just a cost estimate):**
+
+```bash
+./bin/backfill \
     --symbols "AAPL,MSFT" \
     --start 2024-01-17 --end 2024-01-17 \
-    --schema ohlcv-1m --dry-run
+    --schema ohlcv-1m \
+    --dry-run
+```
 
-# Real backfill — NASDAQ
-./scripts/request_backfill.sh \
+**Step 5 — Real backfill:**
+
+```bash
+./bin/backfill \
     --symbols "AAPL,MSFT" \
     --start 2024-01-17 --end 2024-01-17 \
     --schema ohlcv-1m
-
-# Add a second exchange to the same partition
-./scripts/request_backfill.sh \
-    --symbols "AAPL,MSFT" \
-    --start 2024-01-17 --end 2024-01-17 \
-    --schema ohlcv-1m --dataset XNYS.PILLAR
-
-# Query across exchanges
-q hdb <<< 'select count i by exchange from ohlcv_1m where date=2024.01.17'
-
-# Full test suite (8 q tests + 2 Python tests)
-./scripts/run_tests.sh
 ```
 
-See [docs/how_to_run.md](docs/how_to_run.md) for the full guide.
+See [docs/setup.md](docs/setup.md) for the full installation guide and [docs/how_to_run.md](docs/how_to_run.md) for all CLI options.
+
+---
+
+## What a Successful Run Looks Like
+
+```
+Chunk plan for req_20240117_120000_abc123:
+  chunk_id                                           symbols   est_cost
+  ----------------------------------------------------------------------
+  req_20240117_120000_abc123_2024.01.17_AAPL               1 $   0.0005
+  req_20240117_120000_abc123_2024.01.17_MSFT               1 $   0.0005
+
+  Total: 2 chunk(s), estimated $0.0010
+  Limit:  $50.00
+
+[████████████████████] 2/2 chunks complete
+
+============================================================
+  Backfill Summary — req_20240117_120000_abc123
+============================================================
+
+  STATUS : SUCCESS (2 chunk(s) verified)
+  SYMBOLS: AAPL, MSFT
+
+  Exchange             Rows  Symbols
+  -------------------------------------------------------
+  XNAS.ITCH           2,816  AAPL, MSFT
+  -------------------------------------------------------
+  TOTAL               2,816
+```
+
+Then query the HDB:
+
+```bash
+cd ~/grad-project
+q -q
+```
+
+```q
+\l hdb
+select count i by sym from ohlcv_1m where date=2024.01.17
+```
+
+If you re-run the same command for already-loaded data, the pre-flight check catches it before any API call:
+
+```
+NOTE: 2 chunk(s) already in HDB — skipping (saves API cost):
+  XNAS.ITCH  ohlcv-1m  2024-01-17  — already loaded
+
+All requested chunks already in HDB. Nothing to do.
+```
 
 ---
 

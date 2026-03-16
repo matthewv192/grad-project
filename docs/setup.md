@@ -49,7 +49,26 @@ pip install -e .
 
 ---
 
-## 3. Configure environment
+## 3. Add your Databento API key
+
+Open `setenv.sh` and replace the placeholder value on the marked line with your own key. Your key starts with `db-` and can be found at <https://app.databento.com/portal/keys>.
+
+```bash
+nano setenv.sh    # look for the line marked "EDIT ME"
+```
+
+The line to change looks like this:
+
+```bash
+# Databento API key — EDIT ME: replace with your own key
+export DATABENTO_API_KEY="db-..."
+```
+
+> **Do not** set `DATABENTO_API_KEY` as a shell export before sourcing `setenv.sh` — `setenv.sh` overwrites the variable, so pre-setting it has no effect.
+
+---
+
+## 4. Configure environment
 
 ```bash
 cd ~/grad-project
@@ -67,7 +86,7 @@ KDBHDB      = /home/<user>/grad-project/hdb
 
 ---
 
-## 4. Run a dry run (no API calls)
+## 5. Run a dry run (no API calls)
 
 ```bash
 ./bin/backfill \
@@ -82,7 +101,7 @@ This prints a cost estimate and chunk plan without submitting any Databento jobs
 
 ---
 
-## 5. Run a real backfill
+## 6. Run a real backfill
 
 ```bash
 ./bin/backfill \
@@ -96,7 +115,7 @@ Downloaded CSVs are staged in `staging/<chunk_id>/` (one directory per chunk, na
 
 ---
 
-## 6. Load from a second exchange into the same partition
+## 7. Load from a second exchange into the same partition
 
 ```bash
 ./bin/backfill \
@@ -113,7 +132,7 @@ Supported datasets include: `XNAS.ITCH`, `XNYS.PILLAR`, `IEXG.TOPS`, `EQUS.MINI`
 
 ---
 
-## 7. Query the HDB
+## 8. Query the HDB
 
 ```bash
 cd ~/grad-project
@@ -141,7 +160,7 @@ select from ohlcv_1m where date=2024.01.17, sym=`MSFT, exchange=`XNAS.ITCH
 
 ---
 
-## 8. Run unit tests
+## 9. Run unit tests
 
 ```bash
 cd ~/grad-project
@@ -165,7 +184,7 @@ KDBHDB=/path/to/hdb ./scripts/run_tests.sh
 
 ---
 
-## 9. Check backfill status
+## 10. Check backfill status
 
 ```bash
 ./bin/backfill --status
@@ -181,7 +200,7 @@ The `scripts/backfill_status.sh` wrapper also works and accepts the same flags.
 
 ---
 
-## 10. Retry failed chunks
+## 11. Retry failed chunks
 
 ```bash
 ./bin/backfill --retry-failed
