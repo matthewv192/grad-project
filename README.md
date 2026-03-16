@@ -49,27 +49,34 @@ See [docs/how_to_run.md](docs/how_to_run.md) for the full guide.
 grad-project/
 ├── setenv.sh               # Set TORQHOME, PACKAGEHOME, KDBHDB, STAGING_DIR
 ├── pyproject.toml          # Python deps: databento, pandas, pyarrow
+├── bin/
+│   └── backfill            # Main entrypoint: sources env, activates venv, calls orchestrator
 ├── config/
 │   ├── settings.q          # All configurable parameters
 │   └── process.csv         # TorQ process definitions (hdb:6010, loader:6011)
 ├── code/
 │   ├── backfill/
-│   │   ├── orchestrator.py # Python: submit/poll/download Databento batch jobs
+│   │   ├── orchestrator.py # Python: chunk generation, cost guard, Databento API, job store
+│   │   ├── metrics.py      # Python: per-chunk timing metrics and summary
+│   │   ├── jobstore.q      # q: CRUD for the kdb job store (staging/metadata/backfill_jobs)
 │   │   ├── manifest.q      # q: read manifests, validate, dispatch to loader
 │   │   ├── loader.q        # q: parse CSVs, merge partitions, write HDB
 │   │   └── quality.q       # q: data quality checks (dups, ordering, nulls)
 │   ├── reference/
-│   │   ├── ref_ingest.py   # Generate synthetic reference data CSVs
-│   │   └── ref_tables.q    # Load reference CSVs into q tables
+│   │   ├── ref_ingest.py   # Fetch corp actions/dividends via yfinance; compute adj factors
+│   │   └── ref_tables.q    # Load reference CSVs into in-memory q tables
 │   └── adjlib/
-│       └── adjlib.q        # Price/volume adjustment library
+│       └── adjlib.q        # Price/volume adjustment library (backward/forward, PIT asOf)
 ├── schema/
-│   └── schema.q            # All table schemas (trades, ohlcv_1m, ref_*, jobs)
+│   └── schema.q            # All table schemas (trades, ohlcv_1m, backfill_jobs, ref_*)
 ├── scripts/
 │   ├── setup_python.sh     # Create venv and install Python dependencies
 │   ├── request_backfill.sh # Submit a new backfill request
 │   ├── backfill_status.sh  # Show job progress
 │   ├── retry_failed.sh     # Re-queue failed chunks
+│   ├── download_only.sh    # Download and stage CSVs without loading
+│   ├── load_only.sh        # Run q loader on existing staged manifests
+│   ├── check_quality.sh    # Run quality checks on a partition
 │   └── run_tests.sh        # Run the full test suite
 ├── tests/
 │   ├── test_schema.q
@@ -84,6 +91,7 @@ grad-project/
 │   └── test_metrics.py
 └── docs/
     ├── architecture.md
+    ├── walkthrough.md
     ├── how_to_run.md
     ├── setup.md
     ├── config_reference.md

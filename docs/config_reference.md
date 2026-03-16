@@ -133,42 +133,39 @@ Each downloaded chunk produces a manifest file in `staging/metadata/manifests/`.
 
 ---
 
-## Job Store JSON Schema
+## Job Store Schema
 
-Each chunk has a persistent record in `staging/metadata/jobs/`. Updated at every status transition.
+Each chunk has a persistent record in the kdb binary table at `staging/metadata/backfill_jobs`. Updated at every status transition. The table schema is defined in `schema/schema.q` as `backfill_jobs`; reads and writes are handled by `code/backfill/jobstore.q`.
 
-| Key | Type | Description |
+| Column | kdb type | Description |
 |---|---|---|
-| `chunk_id` | string | Unique per (request, date, symbol) — format: `<request_id>_<YYYY.MM.DD>_<SYM>` |
-| `request_id` | string | Parent request identifier |
-| `databento_job_id` | string | Databento batch job ID (set after submit) |
-| `dataset` | string | Databento dataset, e.g. `XNAS.ITCH` |
-| `schema` | string | `trades` or `ohlcv-1m` |
-| `date` | string | Partition date `YYYY-MM-DD` |
-| `symbols` | array | Ticker list for this chunk |
-| `status` | string | `pending` → `submitted` → `running` → `downloaded` → `loaded` → `verified` (or `failed`) |
-| `retries` | integer | Number of failed attempts so far |
-| `error_msg` | string | Last failure message (empty on success) |
-| `failure_type` | string | Failure category: `api_error` · `download_error` · `parse_error` · `load_error` · `quality_error` |
-| `file_path` | string | Primary CSV path |
-| `file_paths` | array | All CSV paths (multi-file jobs) |
-| `checksum` | string | SHA-256 of primary CSV |
-| `row_count` | integer | Data row count from CSV |
-| `min_ts` / `max_ts` | string | Actual timestamp range written to HDB (set by q loader) |
-| `created_at` / `updated_at` | string | ISO 8601 timestamps |
+| `chunk_id` | symbol | Unique per (request, date, symbol) — format: `<request_id>_<YYYY.MM.DD>_<SYM>` |
+| `request_id` | symbol | Parent request identifier |
+| `databento_job_id` | symbol | Databento batch job ID (set after submit) |
+| `dataset` | symbol | Databento dataset, e.g. `XNAS.ITCH` |
+| `schema` | symbol | `` `trades `` or `` `ohlcv_1m `` |
+| `date` | date | Partition date |
+| `symbols` | generic list | Ticker list for this chunk |
+| `status` | symbol | `pending` → `submitted` → `running` → `downloaded` → `loaded` → `verified` (or `failed`) |
+| `retries` | int | Number of failed attempts so far |
+| `error_msg` | generic list | Last failure message (empty on success) |
+| `failure_type` | symbol | Failure category: `api_error` · `download_error` · `parse_error` · `load_error` · `quality_error` |
+| `file_path` | symbol | Primary CSV path |
+| `file_paths` | generic list | All CSV paths (multi-file jobs) |
+| `checksum` | symbol | SHA-256 of primary CSV |
+| `row_count` | long | Data row count from CSV |
+| `min_ts` / `max_ts` | timestamp | Actual timestamp range written to HDB (set by q loader) |
+| `created_at` / `updated_at` | timestamp | Write timestamps |
 
 ### Querying the job store from the CLI
 
 ```bash
-# Summary of all requests
-python code/backfill/orchestrator.py --status
+# Summary of all requests (uses Python status display)
+./bin/backfill --status
 
 # Filter to a specific request
-python code/backfill/orchestrator.py --status --request-id req_20240603_120000_abc123
-```
+./bin/backfill --status --request-id req_20240603_120000_abc123
 
-Job store JSON files in `staging/metadata/jobs/` are plain text and can be inspected directly:
-
-```bash
-cat staging/metadata/jobs/<chunk_id>.json
+# Query the raw kdb table directly
+echo '{"op":"loadAll"}' | JOBS_FILE=$(pwd)/staging/metadata/backfill_jobs q -q code/backfill/jobstore.q
 ```

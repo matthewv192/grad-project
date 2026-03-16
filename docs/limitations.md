@@ -35,7 +35,7 @@ The partition merge and write block is wrapped in a protected eval that releases
 ```bash
 find hdb -name ".*.lock" -type d -exec rmdir {} +
 ```
-Then reset the chunk status to `downloaded` in `staging/metadata/jobs/` and re-run.
+Then re-run with `--retry-failed` to requeue the affected chunks.
 
 ### Only `trades` and `ohlcv-1m` schemas are supported
 Adding support for other Databento schemas (e.g. `mbp-1`, `tbbo`, `ohlcv-1d`) requires:
@@ -61,7 +61,7 @@ Always use `--dry-run` first when working with a new date range or symbol list t
 Each chunk is one symbol × one exchange × one day. A request for 100 symbols over 252 trading days produces 25,200 Databento batch jobs. Large requests should use `--dry-run` first to preview the job count and cost before submitting.
 
 ### `--status` reads all job records on every call
-`python orchestrator.py --status` reads and parses every `.json` file in the job store directory each time it is called. For large backfills with thousands of chunks this can be slow. There is currently no indexing or caching.
+`./bin/backfill --status` loads and deserialises the full `staging/metadata/backfill_jobs` kdb table on every call. For large backfills with thousands of chunks this involves spawning a q subprocess and parsing the full table. There is currently no indexing or caching.
 
 ---
 

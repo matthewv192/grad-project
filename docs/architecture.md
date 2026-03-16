@@ -42,10 +42,10 @@ staging/
 ├── <chunk_id>/          # Raw CSV data (one dir per chunk)
 ├── metadata/
 │   ├── manifests/       # Load instructions (one JSON per chunk)
-│   ├── jobs/            # Job status tracking (one JSON per chunk)
+│   ├── backfill_jobs    # Job status tracking (kdb binary table)
 │   └── archive/         # Verified manifests (moved after load)
 ├── metrics/             # Per-chunk timing metrics
-└── reference/           # Symbology maps
+└── reference/           # Corp actions, adj factors, symbology map
 
 hdb/
 └── YYYY.MM.DD/          # Partitioned by date
@@ -55,8 +55,8 @@ hdb/
 
 **4. Key Scripts**
 - **Shell**: `bin/backfill` (entrypoint — sources env, activates venv, calls orchestrator)
-- **Python**: `orchestrator.py` (API client, cost control)
-- **q**: `loader.q`, `manifest.q`, `quality.q`, `adjlib.q`
+- **Python**: `orchestrator.py` (API client, cost control), `metrics.py` (timing)
+- **q**: `loader.q`, `manifest.q`, `quality.q`, `jobstore.q`, `adjlib.q`
 - **Reference**: `ref_ingest.py`, `ref_tables.q`
 
 ---
@@ -78,7 +78,7 @@ All communication between Python and q goes through files on disk. Python never 
 |---|---|---|
 | `chunks/<id>/*.csv` | `download_csv()` | `loadChunkBatch()` |
 | `metadata/manifests/*.json` | `write_manifest()` | `processManifests()` |
-| `metadata/jobs/*.json` | `orchestrator.py` | `updateJobRecord()`, status scripts |
+| `metadata/backfill_jobs` | `KdbJobStore` (via `jobstore.q`) | `KdbJobStore` (via `jobstore.q`) |
 | `metrics/<req>/<chunk>.json` | `metrics.py` (stub) | `updateMetrics()` (q fills timing) |
 | `reference/symbology_map.csv` | `flushSymbologyMap()` | `ref_tables.q` → `resolveSymbol()` |
 
@@ -127,5 +127,5 @@ stateDiagram-v2
 - **Chunk-level idempotency**: each `(date, symbol-batch, exchange)` chunk is independent. A crash in chunk N does not affect chunk N+1.
 - **Exchange-aware idempotency**: re-running a load for an already-loaded `(date, exchange)` pair is detected and skipped without re-writing data.
 - **Write locking**: `acquireWriteLock()` uses atomic POSIX `mkdir` to prevent concurrent `.Q.dpft` calls on the same partition.
-- **Atomic writes**: all JSON updates (job records, metrics, manifests) write to a `.tmp` file and then `mv` to the final path.
+- **Atomic writes**: manifest and metrics JSON files write to a `.tmp` file and then `mv` to the final path. Job records are written atomically by kdb's `set` operator on the binary table file.
 - **Checksum verification**: on resume after a crash-during-download, the stored SHA-256 is re-verified before skipping the re-download.
