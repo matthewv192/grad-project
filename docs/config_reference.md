@@ -37,7 +37,7 @@ other symbol or day.
 
 | Setting | Env var | Default | Description |
 |---|---|---|---|
-| `BACKFILL_CHUNK_SIZE` | `BACKFILL_CHUNK_SIZE` | `10` | Retained for CLI compatibility; no longer controls batch size (chunks are always 1 symbol per job). |
+| `BACKFILL_CHUNK_SIZE` | `BACKFILL_CHUNK_SIZE` | `10` | Number of symbols per Databento batch job. Larger values reduce API round-trips; smaller values give finer retry granularity. |
 
 ---
 
@@ -99,7 +99,7 @@ Redirect stdout to `logs/` if you also want console output captured:
 | `--end` | Yes | End date `YYYY-MM-DD` (inclusive) |
 | `--schema` | No | `trades` or `ohlcv-1m` (default: `trades`) |
 | `--dataset` | No | Databento dataset identifier (default: `XNAS.ITCH`). The dataset name is stored as the `exchange` column in the HDB. |
-| `--chunk-size` | No | Retained for CLI compatibility; chunks are always 1 symbol per job |
+| `--chunk-size` | No | Symbols per Databento batch job (default: 10). Larger values reduce API round-trips; smaller values give finer retry granularity. |
 | `--workers` | No | Parallel chunk workers (default: `12`). Each worker runs the full submit→poll→download pipeline for one chunk concurrently. |
 | `--request-id` | No | Override auto-generated ID. If a record already exists with different parameters the run aborts; matching parameters are treated as an idempotent resume. |
 | `--retry-failed` | No | Only retry `failed` chunks from the job store |

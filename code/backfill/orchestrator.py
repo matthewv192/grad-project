@@ -342,29 +342,33 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
                     end: date, chunk_size: int, schema: str,
                     dataset: str, stype_in: str = "raw_symbol") -> list[Chunk]:
     """
-    Split a backfill request into one-day × one-symbol × one-exchange chunks.
+    Split a backfill request into one-day × one-symbol-batch chunks.
 
-    For a 3-day request with 4 symbols this produces 3 × 4 = 12 chunks.
-    Each chunk maps to exactly one Databento batch job, giving the finest
-    possible retry granularity (a single symbol/day failure doesn't affect
-    any other symbol or day).
+    Symbols are grouped into batches of chunk_size. Each batch maps to one
+    Databento batch job. For chunk_size=10 with 30 symbols over 5 days this
+    produces 3 batches × 5 days = 15 chunks instead of 150.
 
-    The chunk_size parameter is no longer used for batching but is kept in
-    the signature so existing CLI calls (--chunk-size) don't break.
+    chunk_size=1 uses single-symbol chunk IDs (<request>_<date>_<SYM>).
+    chunk_size>1 uses batch-index IDs (<request>_<date>_b000, b001, ...).
     """
     chunks = []
     d = start
     while d <= end:
         date_str = d.strftime("%Y.%m.%d")
-        for sym in symbols:
-            safe_sym = re.sub(r"[^A-Za-z0-9]", "_", sym)
-            chunk_id = f"{request_id}_{date_str}_{safe_sym}"
+        batches = [symbols[i:i + chunk_size]
+                   for i in range(0, len(symbols), chunk_size)]
+        for batch_idx, batch_syms in enumerate(batches):
+            if chunk_size == 1:
+                safe_sym = re.sub(r"[^A-Za-z0-9]", "_", batch_syms[0])
+                chunk_id = f"{request_id}_{date_str}_{safe_sym}"
+            else:
+                chunk_id = f"{request_id}_{date_str}_b{batch_idx:03d}"
             chunks.append(Chunk(
                 request_id=request_id,
                 chunk_id=chunk_id,
                 dataset=dataset,
                 schema=schema,
-                symbols=[sym],
+                symbols=batch_syms,
                 date=d,
                 stype_in=stype_in,
             ))
@@ -992,8 +996,11 @@ def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
             else:
                 failed += 1
             status = "ok" if ok else "FAIL"
-            sym = chunk.symbols[0] if chunk.symbols else chunk.chunk_id
-            print(f"\r  [{done}/{total}] {sym} {chunk.date} — {status}    ",
+            if len(chunk.symbols) == 1:
+                label = chunk.symbols[0]
+            else:
+                label = f"{chunk.symbols[0]}+{len(chunk.symbols) - 1}"
+            print(f"\r  [{done}/{total}] {label} {chunk.date} — {status}    ",
                   end="", flush=True)
     print()  # newline after progress line
     return succeeded, failed
@@ -1144,7 +1151,8 @@ def parse_args(argv=None):
                         choices=SUPPORTED_SCHEMAS)
     parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE,
-                        help=f"Symbols per batch job (default: {DEFAULT_CHUNK_SIZE})")
+                        help=f"Symbols per Databento batch job (default: {DEFAULT_CHUNK_SIZE}). "
+                             f"Larger values reduce API round-trips; smaller values give finer retry granularity.")
     parser.add_argument("--request-id",
                         help="Override auto-generated request_id")
     parser.add_argument("--retry-failed", action="store_true",

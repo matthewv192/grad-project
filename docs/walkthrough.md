@@ -62,8 +62,9 @@ Python is the right tool for HTTP APIs, JSON, file system orchestration, and ret
 **Usage:** The `bin/backfill` entrypoint sources `setenv.sh` automatically. Manual sourcing is only needed for interactive q sessions:
 ```bash
 source setenv.sh
-q hdb
+q -q
 ```
+Then in q: `\l hdb` (loading the HDB changes the working directory, so any additional scripts such as `adjlib.q` must be loaded before this line).
 
 ---
 
@@ -282,52 +283,152 @@ bash scripts/run_tests.sh
 
 **This was explicitly encouraged by the company as part of the graduate project.** The goal was not just to build the pipeline, but to learn how to effectively direct an AI coding assistant to produce production-quality output.
 
-### The Workflow
+---
 
-**Step 1 — Problem specification**
+### 4.1 The Initial Prompting Strategy
 
-The project requirements were pasted into Claude (web interface) and a structured prompt was requested. Before generating anything, Claude was asked to raise clarifying questions to ensure the build would be correct. Questions and answers covered:
-- Which Databento datasets and schemas were required (XNAS.ITCH, trades and ohlcv-1m)
-- Which kdb+ version (kdb+5)
-- That this should be a **separate TorQ package** in its own repo, not modifications to the TorQ core
-- That the process was being built by graduates, so clarity and documentation were as important as functionality
+The project did not start with "write me a backfill pipeline." It started with a deliberately constrained prompt:
 
-**Step 2 — Directory structure**
+> *"I am going to give you a set of project requirements. Before you write a single line of code, ask me every clarifying question you need to answer in order to build this correctly."*
 
-The existing directory tree (TorQ install, MCP server, the empty grad-project folder) was shared with Claude so it understood the environment before writing any code.
+Claude raised questions covering:
+- Which Databento datasets and schemas were required (`XNAS.ITCH`, `trades` and `ohlcv-1m`)
+- Which kdb+ version (kdb+5, not kdb+4 — the difference matters for several language behaviours)
+- Whether this should be a TorQ package in its own repo or modifications to TorQ core (answer: separate package — critical for separation of concerns)
+- What "production-ready" meant in this context (idempotency, crash recovery, cost safeguards, and test coverage were all called out explicitly)
+- That clarity and documentation were as important as functionality, since the project was being built by graduates
 
-**Step 3 — Milestone-based prompt**
+This approach front-loaded the specification work rather than discovering misalignments after code had been written. The existing directory tree — TorQ install location, empty `grad-project/` folder, Python environment — was also shared before any code was generated, so Claude understood the actual deployment environment.
 
-Claude produced a structured prompt that split the build into four milestones, each independently executable and testable:
+---
 
-- **M0** — Package skeleton: directory structure, `setenv.sh`, `schema.q`, `config/process.csv`, `settings.q`
-- **M1** — Full pipeline: `orchestrator.py` (submit → poll → download → manifest), `loader.q`, `manifest.q`, basic test suite
-- **M2** — Hardening: chunking, job store persistence, idempotency, retry logic, cost safeguard
-- **M3** — Reference data: `ref_ingest.py`, `ref_tables.q`, `adjlib.q`, adjustment tests
-- **M4** — Multi-exchange support: `exchange` column, merge logic in `loadChunkBatch`, `unenumAll`
+### 4.2 Milestone-Based Build
 
-This milestone structure was important because it meant at the end of each milestone there was working, testable code. It prevented the common failure mode of generating everything at once and ending up with a system that is impossible to debug because nothing has ever run.
+Claude produced a structured build plan splitting the project into five milestones, each independently executable and testable before the next began:
 
-**Step 4 — SKILL.md**
+| Milestone | Scope |
+|---|---|
+| **M0** | Package skeleton: directory structure, `setenv.sh`, `schema.q`, `config/process.csv`, `settings.q` |
+| **M1** | Full pipeline: `orchestrator.py` (submit → poll → download → manifest), `loader.q`, `manifest.q`, basic test suite |
+| **M2** | Hardening: chunking, kdb job store persistence, idempotency, retry with exponential backoff, cost safeguard |
+| **M3** | Reference data: `ref_ingest.py`, `ref_tables.q`, `adjlib.q`, adjustment tests |
+| **M4** | Multi-exchange: `exchange` column in schema, merge logic in `loadChunkBatch`, `unenumAll` |
 
-A kdb+/q developer SKILL.md file was created to give Claude persistent context about kdb+5 idioms, TorQ conventions, and known gotchas (such as the `.z.e` / `getenv` distinction in kdb+5, the `multiline closing brace` parser issue, and the `.Q.dpft` global table requirement). This reduced repeated mistakes across milestones.
+The milestone structure was important because it meant working, testable code existed at every stage. The common failure mode with AI-assisted development is generating everything at once and ending up with a system where nothing has ever run and errors are impossible to isolate. Completing and testing M1 before starting M2 eliminated entire classes of debugging problem.
 
-### How I Guided the Process
+---
 
-The Claude-assisted workflow was iterative, not passive. Specific examples of direction given:
+### 4.3 Persistent Context — SKILL.md and Session Memory
 
-- **Pushed back on the Python/q boundary** — an early draft had Python doing CSV parsing. I directed it to move all parsing into q so that type enforcement happened at the point of writing to the HDB, not before.
-- **Required idempotency from the start** — the job store and checksum logic were explicitly requested as non-negotiable requirements, not optional enhancements.
-- **Specified the exchange column** — the `exchange` column in the schema was my direction, anticipating the multi-exchange milestone from the beginning rather than retrofitting it later.
-- **Reviewed every generated test** — tests were run after each milestone, failures were fed back to Claude, and the root cause was investigated before accepting the fix. Claude would sometimes propose workarounds; I pushed back where the underlying issue needed to be properly understood and fixed.
-- **Controlled scope** — several times Claude would suggest adding features (e.g. a full monitoring dashboard, database-backed job store). These were redirected: the requirement was a clean, well-understood pipeline, not a maximally-featured one.
+A major challenge with multi-session AI-assisted development is context loss. Two mechanisms were used to address this:
 
-### What This Demonstrates
+**SKILL.md** — a 426-line kdb+/q developer reference document created at the start of the project and loaded into every Claude session. It covers:
+- q language fundamentals (evaluation order, type system, null/infinity handling)
+- HDB partition patterns (`.Q.dpft`, `.Q.en`, `.Q.chk`, attribute application)
+- TorQ-specific conventions (`.lg.o`/`.lg.e` logging, `config/process.csv`, timer)
+- Error-prone areas specific to kdb+5 (e.g. `getenv` vs `.z.e`, symbol enumeration after partition writes, the multiline closing brace parser issue)
+- Project-specific coding standards (always comment non-obvious logic, use protected evaluation in all I/O code)
+
+Without SKILL.md, Claude would periodically revert to kdb+4 idioms, use `.z.e` to read environment variables (which doesn't work in kdb+5), or write `q hdb` to load the HDB (which changes the working directory in a way that breaks subsequent script loads). SKILL.md prevented these from being re-introduced across sessions.
+
+**Session memory** — Claude Code maintains a persistent memory file (`MEMORY.md`) that accumulates project state, architectural decisions, and kdb+5 gotchas discovered during development. This meant each new session started with full context: known bugs, file layout changes, wiring decisions, and active gaps. Without this, every session would begin with re-explaining the architecture.
+
+---
+
+### 4.4 Iterative Debugging — Specific Examples
+
+The most important part of the workflow was not prompting Claude to write code — it was verifying the output and feeding failures back precisely. Several bugs required real domain knowledge to diagnose:
+
+**`.Q.dpft` requires a global table, not a local variable**
+
+An early version of `loadChunkBatch` passed a local variable to `.Q.dpft`:
+```q
+data: readTradesCSV[...];
+.Q.dpft[hdbDir; partDate; `sym; data]   / WRONG — writes empty schema table
+```
+This compiled and ran without error but wrote an empty table to the HDB. The bug only manifested when querying the HDB and finding all partitions empty. The fix — always set the global first:
+```q
+`trades set data;
+.Q.dpft[hdbDir; partDate; `sym; `trades]
+```
+This is not obvious from the kdb+ documentation and would not have been caught by a code review that only read the source.
+
+**Enumerated symbol columns after `.Q.dpft`**
+
+When the multi-exchange merge feature was added, existing HDB partitions would come back with integer values (12, 13, ...) instead of symbol names after a second exchange was loaded. Root cause: `.Q.dpft` enumerates **all** symbol columns (not just `sym`), converting them to type-20h integer references into the shared `sym` file. When merging, the existing partition's columns were being concatenated as integer lists with the new data's plain symbol lists, corrupting the result.
+
+Fix: the `unenumAll` function added to `loader.q` detects all type-20h columns before the merge and converts them back to plain symbols:
+```q
+unenumAll:{[t] @[t; where 20h = type each flip t; {`$string x}] }
+```
+This kind of bug — correct at the syntax level, silently wrong at the data level — is exactly what makes kdb+ partition writes risky without deep familiarity with the type system.
+
+**`};` at column 0 causes silent parse failure in kdb+5**
+
+A multi-line function's closing brace at the start of a line is misparsed in kdb+5 when loaded via `\l`. The function body ends early but no error is raised at load time — the function simply runs with wrong behaviour. This manifested as loader failures only on specific input patterns. Fix: always indent the closing brace by at least one space. This is undocumented behaviour specific to kdb+5 script loading.
+
+**`get` on a splayed partition suppresses the date column**
+
+When reading an existing HDB partition to merge with new data:
+```q
+existing: get hsym `$string[hdbDir],"/",string[partDate],"/trades"
+```
+`get` returns the table **without** the `date` column — it is the partition key, implied by the directory. When concatenating with new data that includes `date`, this caused a `'mismatch` error. Fix: `update date:partDate from existing` before merging.
+
+**Parallel-run race condition**
+
+During multi-exchange testing, running two `./bin/backfill` invocations simultaneously — one for XNAS.ITCH, one for XNYS.PILLAR — caused each q loader subprocess to scan the entire `staging/metadata/manifests/` directory and process all manifests, not just its own run's. This produced partial writes: some symbols ended up in the HDB from the wrong run's loader, some were skipped entirely. The bug was invisible until the HDB was queried and symbol counts didn't match expectations.
+
+Fix: Python now passes `REQUEST_ID` as an environment variable to the q loader subprocess, and `manifest.q`'s `processManifests` filters to only the manifests matching that ID before doing any work:
+```q
+reqId: getenv `REQUEST_ID;
+if[count reqId;
+    matchIdx: where (`$reqId) = {x`request_id} each parsed;
+    parsed: parsed matchIdx;
+    validPaths: validPaths matchIdx
+];
+```
+
+---
+
+### 4.5 Requirements Audit
+
+Midway through the project, a structured audit was conducted: the original requirements document was reviewed line by line against the actual implementation to find gaps between what was specified and what was built.
+
+Two gaps were found:
+
+1. **`ref_corp_actions` not append-only** — the requirements specified point-in-time correctness for reference data (so a backtest run in January should use only factor data available in January, not revisions ingested in February). The `ref_corp_actions` table was being overwritten on each ingest rather than appended with a `loaded_at` timestamp. Fix: changed `_upsert_csv` to `_append_csv` and added a `loaded_at` column to both the schema and the ingest script.
+
+2. **Job store was still JSON files** — the requirements specified a kdb binary table for job tracking. The implementation had a `backfill_jobs` schema defined in `schema.q` but the actual job store was writing individual JSON files per chunk to `staging/metadata/jobs/`. Fix: `jobstore.q` was written to manage a kdb binary table at `staging/metadata/backfill_jobs`, and Python's `JobStore` class was replaced with `KdbJobStore` which communicates with it via a q subprocess.
+
+The audit approach — treating it as a formal gap analysis rather than "does it seem to work" — surfaced issues that would have been invisible in normal testing.
+
+---
+
+### 4.6 Architectural Decisions That Were Human-Directed
+
+Claude consistently deferred to explicit direction on architectural choices:
+
+- **Python/q boundary** — an early draft had Python doing CSV parsing. This was redirected: all parsing and type enforcement happens in q, at the point of writing to the HDB. This ensures that a malformed value causes a controlled failure in the loader, not a silent type mismatch in the database.
+
+- **Exchange column from the start** — the `exchange` column was specified in `schema.q` at M0, anticipating the multi-exchange milestone. Claude's initial schema draft omitted it. Adding it retroactively would have required a migration script for all existing partitions.
+
+- **Idempotency as a requirement, not a feature** — Claude's M1 draft assumed a clean run. The job store, checksum verification, and HDB pre-flight check were specified as non-negotiable from the beginning, not added later.
+
+- **Scope control** — Claude periodically suggested additions: a monitoring dashboard, a REST API for job status, a database-backed configuration system. Each was declined. The requirement was a well-understood, maintainable pipeline — not a maximally-featured one.
+
+- **Chunk size tradeoff** — the initial implementation used 1 symbol per chunk (finest retry granularity). After reviewing the Databento API overhead per job, this was revised to a default batch size of 10 symbols per chunk — reducing API round-trips by 10x for typical runs while keeping retry granularity acceptable.
+
+---
+
+### 4.7 What This Demonstrates
 
 Using Claude effectively in this project required:
-1. Clear upfront specification (garbage in, garbage out applies to prompts just as much as data)
-2. Domain knowledge to evaluate the output — a generated kdb+5 script that doesn't account for enum column types after `.Q.dpft` looks correct but corrupts the HDB on a multi-exchange merge
-3. Discipline to test incrementally and not accept code that "looks right"
-4. Understanding when to override Claude's suggestions in favour of simpler or more correct approaches
 
-The AI accelerated the build significantly, particularly for boilerplate, documentation, and test generation. The architectural decisions, the correctness of the kdb+ partition write logic, and the production-readiness requirements were all human-directed.
+1. **Clear upfront specification** — the clarifying-questions prompt prevented misalignments from being baked into early code
+2. **Domain knowledge to evaluate output** — a generated kdb+5 script that ignores enum column types after `.Q.dpft` looks syntactically correct but corrupts the HDB silently on a multi-exchange merge
+3. **Incremental testing discipline** — running tests after each milestone before proceeding to the next, rather than testing the whole system at the end
+4. **Knowing when to override** — Claude's default behaviour is to add safety checks, fallbacks, and generality. Several times the simpler, more direct approach was the correct one
+5. **Persistent context management** — SKILL.md and session memory meant the AI's behaviour was consistent across many sessions rather than drifting back to defaults
+
+The AI accelerated the build significantly: boilerplate, test generation, documentation, and iterative bug-fixing were all substantially faster. The architectural decisions, the correctness of the kdb+ partition write logic, and the production-readiness requirements were human-directed throughout.

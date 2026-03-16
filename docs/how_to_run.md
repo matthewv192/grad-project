@@ -84,6 +84,7 @@ All commands use `bin/backfill`, which handles environment setup automatically.
 | `--end` | _(required)_ | End date, inclusive (YYYY-MM-DD) |
 | `--schema` | `trades` | `trades` or `ohlcv-1m` |
 | `--dataset` | `XNAS.ITCH` | Databento dataset identifier |
+| `--chunk-size` | `10` | Symbols per Databento batch job |
 | `--workers` | `12` | Parallel chunk workers |
 | `--dry-run` | off | Print cost estimate only; no API calls |
 | `--download-only` | off | Download and stage CSVs; skip the q loader |

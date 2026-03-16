@@ -60,10 +60,18 @@ class TestGenerateChunks(unittest.TestCase):
         self.assertEqual(chunks[0].symbols, ["AAPL"])
         self.assertEqual(chunks[0].date, date(2024, 1, 15))
 
-    def test_symbols_each_get_own_chunk(self):
-        # 7 symbols × 1 day = 7 chunks (one per symbol)
+    def test_symbols_batched_into_chunks(self):
+        # 7 symbols × 1 day, chunk_size=10 → 1 batch of 7 = 1 chunk
         syms = [f"SYM{i:02d}" for i in range(7)]
         chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 15))
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].symbols, syms)
+
+    def test_chunk_size_one_gives_one_chunk_per_symbol(self):
+        # chunk_size=1: 7 symbols × 1 day = 7 chunks (one per symbol)
+        syms = [f"SYM{i:02d}" for i in range(7)]
+        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 15),
+                              chunk_size=1)
         self.assertEqual(len(chunks), 7)
         self.assertTrue(all(len(c.symbols) == 1 for c in chunks))
 
@@ -76,9 +84,17 @@ class TestGenerateChunks(unittest.TestCase):
         self.assertEqual(chunks[2].date, date(2024, 1, 17))
 
     def test_multi_day_multi_symbol(self):
-        # 7 symbols × 3 days = 21 chunks
+        # 7 symbols × 3 days, chunk_size=10 → 1 batch per day = 3 chunks
         syms = [f"S{i}" for i in range(7)]
         chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 17))
+        self.assertEqual(len(chunks), 3)
+        self.assertTrue(all(len(c.symbols) == 7 for c in chunks))
+
+    def test_multi_day_multi_symbol_chunk_size_one(self):
+        # chunk_size=1: 7 symbols × 3 days = 21 chunks
+        syms = [f"S{i}" for i in range(7)]
+        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 17),
+                              chunk_size=1)
         self.assertEqual(len(chunks), 21)
 
     def test_end_date_is_inclusive(self):
