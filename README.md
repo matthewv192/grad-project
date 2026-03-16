@@ -138,11 +138,6 @@ grad-project/
 │   └── schema.q            # All table schemas (trades, ohlcv_1m, backfill_jobs, ref_*)
 ├── scripts/
 │   ├── setup_python.sh     # Create venv and install Python dependencies
-│   ├── request_backfill.sh # Submit a new backfill request
-│   ├── backfill_status.sh  # Show job progress
-│   ├── retry_failed.sh     # Re-queue failed chunks
-│   ├── download_only.sh    # Download and stage CSVs without loading
-│   ├── load_only.sh        # Run q loader on existing staged manifests
 │   ├── check_quality.sh    # Run quality checks on a partition
 │   └── run_tests.sh        # Run the full test suite
 ├── tests/

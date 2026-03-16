@@ -196,7 +196,6 @@ Filter to a specific request:
 ./bin/backfill --status --request-id req_20240603_120000_abc123
 ```
 
-The `scripts/backfill_status.sh` wrapper also works and accepts the same flags.
 
 ---
 
@@ -206,4 +205,3 @@ The `scripts/backfill_status.sh` wrapper also works and accepts the same flags.
 ./bin/backfill --retry-failed
 ```
 
-The `scripts/retry_failed.sh` wrapper also works and accepts the same flags.

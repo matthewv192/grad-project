@@ -417,7 +417,7 @@ The `error_msg` and `failure_type` fields contain the exact failure reason.
 | Some syms missing from HDB after parallel runs | Multiple `./bin/backfill` invocations ran simultaneously | The `REQUEST_ID` manifest filter prevents this in current code. If you see missing syms from an old run, use `--retry-failed` to reload the affected chunks. |
 | `ValueError: Cannot infer date from filename` | Databento changed filename format | Check the downloaded CSV filename; report the new pattern to update the regex |
 | `request_id already exists with different parameters` | `--request-id` collision | Omit `--request-id` to auto-generate a new one, or use `--retry-failed` to resume the original run |
-| `Job ... failed at Databento` | Databento rejected or failed the batch job | Check the error detail in the log; run `retry_failed.sh` after the cause is resolved |
-| Chunk shows `failed` in status | API error or cost limit hit | Run `retry_failed.sh`; inspect error via `--status` or query `staging/metadata/backfill_jobs` directly |
+| `Job ... failed at Databento` | Databento rejected or failed the batch job | Check the error detail in the log; run `./bin/backfill --retry-failed` after the cause is resolved |
+| Chunk shows `failed` in status | API error or cost limit hit | Run `./bin/backfill --retry-failed`; inspect error via `--status` or query `staging/metadata/backfill_jobs` directly |
 | Old stale manifest causes validation error | CSV file deleted but manifest remains | Safe to ignore — logged as a warning, does not block other chunks |
 | `ModuleNotFoundError: No module named 'databento'` | venv not found | Run `scripts/setup_python.sh` to create the venv, then retry |
