@@ -39,17 +39,19 @@ flowchart TD
 **3. Storage Layout**
 ```
 staging/
-├── <chunk_id>/          # Raw CSV data (one dir per chunk)
+├── <chunk_id>/              # Raw CSV data; one dir per chunk, named by request+sym+date
+│   └── <databento_job_id>/
+│       └── *.csv
 ├── metadata/
-│   ├── manifests/       # Load instructions (one JSON per chunk)
-│   ├── backfill_jobs    # Job status tracking (kdb binary table)
-│   └── archive/         # Verified manifests (moved after load)
-├── metrics/             # Per-chunk timing metrics
-└── reference/           # Corp actions, adj factors, symbology map
+│   ├── manifests/           # Load instructions (one JSON per chunk)
+│   │   └── archive/         # Verified manifests (moved after successful load)
+│   └── backfill_jobs        # Job status tracking (kdb binary table)
+├── metrics/                 # Per-chunk timing metrics (one JSON per chunk)
+└── reference/               # Corp actions, adj factors, symbology map
 
 hdb/
-└── YYYY.MM.DD/          # Partitioned by date
-    ├── trades/
+└── YYYY.MM.DD/              # Partitioned by date
+    ├── trades/              # Splayed table; p# sym, g# exchange
     └── ohlcv_1m/
 ```
 
@@ -76,7 +78,7 @@ All communication between Python and q goes through files on disk. Python never 
 
 | Path | Written by | Read by |
 |---|---|---|
-| `chunks/<id>/*.csv` | `download_csv()` | `loadChunkBatch()` |
+| `<chunk_id>/<job_id>/*.csv` | `download_csv()` | `loadChunkBatch()` |
 | `metadata/manifests/*.json` | `write_manifest()` | `processManifests()` |
 | `metadata/backfill_jobs` | `KdbJobStore` (via `jobstore.q`) | `KdbJobStore` (via `jobstore.q`) |
 | `metrics/<req>/<chunk>.json` | `metrics.py` (stub) | `updateMetrics()` (q fills timing) |
@@ -124,8 +126,10 @@ stateDiagram-v2
 
 ## Idempotency & Fault Tolerance
 
+- **Pre-flight HDB check**: before submitting any Databento jobs, the orchestrator queries the HDB to identify dates where data for the requested `(schema, exchange)` already exists. Those dates are skipped entirely — no API calls are made and no cost is incurred.
 - **Chunk-level idempotency**: each `(date, symbol-batch, exchange)` chunk is independent. A crash in chunk N does not affect chunk N+1.
 - **Exchange-aware idempotency**: re-running a load for an already-loaded `(date, exchange)` pair is detected and skipped without re-writing data.
-- **Write locking**: `acquireWriteLock()` uses atomic POSIX `mkdir` to prevent concurrent `.Q.dpft` calls on the same partition.
+- **Manifest isolation**: when the q loader is invoked, it is passed the `REQUEST_ID` for the current run. `manifest.q` filters to only the manifests for that request ID, preventing concurrent backfill runs that share the same staging directory from loading each other's data.
+- **Write locking**: `acquireWriteLock()` uses atomic POSIX `mkdir` to prevent concurrent `.Q.dpft` calls on the same partition. `fcntl.flock` at the Python level serialises q loader invocations across processes on the same host.
 - **Atomic writes**: manifest and metrics JSON files write to a `.tmp` file and then `mv` to the final path. Job records are written atomically by kdb's `set` operator on the binary table file.
 - **Checksum verification**: on resume after a crash-during-download, the stored SHA-256 is re-verified before skipping the re-download.

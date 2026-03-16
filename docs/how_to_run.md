@@ -95,6 +95,19 @@ submits one Databento job per symbol per day, running up to 12 in parallel.
 A live progress line updates in the terminal as chunks complete, followed by
 a summary table of rows loaded per exchange on success.
 
+### Pre-flight HDB check
+
+Before submitting any Databento jobs, the orchestrator checks the HDB for dates that already have data for the requested `(schema, dataset)` combination. Those dates are skipped automatically — no API calls are made and no cost is incurred. The output shows which dates were skipped:
+
+```
+NOTE: 3 chunk(s) already in HDB — skipping (saves API cost):
+  XNAS.ITCH  ohlcv-1m  2024-06-03  — already loaded
+  XNAS.ITCH  ohlcv-1m  2024-06-04  — already loaded
+  XNAS.ITCH  ohlcv-1m  2024-06-05  — already loaded
+```
+
+If all requested dates are already loaded, the run exits cleanly without submitting anything.
+
 ### Dry run (cost estimate, no API calls)
 
 ```bash
@@ -175,8 +188,17 @@ Idempotency is exchange-aware: re-running a load for an already-loaded `(date, e
 
 ```bash
 cd ~/grad-project
-q hdb
+q -q
 ```
+
+Then in q:
+
+```q
+\l hdb
+```
+
+> **Note on loading order:** `\l hdb` changes q's working directory to `hdb/`. Load any additional scripts (e.g. `adjlib.q`) **before** `\l hdb`, or use `q -q` and load the HDB explicitly rather than `q hdb` (which has the same effect).
+
 
 ```q
 / Row counts by exchange for a partition date
@@ -202,8 +224,17 @@ select open, high, low, close, volume by exchange
 
 ### Adjusted close prices
 
+Start q from the project root, load adjlib **before** the HDB (loading the HDB changes the working directory), then load reference data:
+
+```bash
+cd ~/grad-project
+q -q
+```
+
 ```q
 \l code/adjlib/adjlib.q
+\l hdb
+loadAllRefData[]
 
 / Raw (unadjusted) bars — accepts a single sym or a list
 getUnadjusted[`ohlcv_1m; `AAPL; 2024.06.03; 2024.06.05]
@@ -220,7 +251,7 @@ getAdjustedClose[`AAPL; 2024.06.03; 2024.06.05; `forward; 0Np]
 getAdjustedClose[`AAPL; 2024.06.03; 2024.06.05; `backward; 2024.07.01D00:00:00.000000000]
 ```
 
-> **Note:** These functions query the HDB, so run them from a session that has already loaded it (`q hdb` or after `system "l hdb"`). Adjustment factors are fetched automatically from yfinance after each backfill and stored in `staging/reference/adj_factors.csv`. Pass `0Np` as the fifth argument to use the latest available revision, or a specific timestamp for point-in-time factor selection.
+> **Note:** Adjustment factors are fetched automatically from yfinance after each backfill and stored in `staging/reference/adj_factors.csv`. `loadAllRefData[]` loads them into memory. Pass `0Np` as the fifth argument to `getAdjustedClose` to use the latest available revision, or a specific timestamp for point-in-time factor selection.
 
 ---
 
@@ -383,6 +414,7 @@ The `error_msg` and `failure_type` fields contain the exact failure reason.
 | `TORQHOME = ` (empty) | `setenv.sh` sourced before `cd grad-project` | Always source from inside `grad-project/` |
 | `q loader exited 1` | q can't find `schema/schema.q` | Ensure you're running from inside `grad-project/` |
 | `write lock held for ...` | Stale lock from a crashed run | Run `find hdb -name ".*.lock" -type d -exec rmdir {} +` then resubmit with `--retry-failed` |
+| Some syms missing from HDB after parallel runs | Multiple `./bin/backfill` invocations ran simultaneously | The `REQUEST_ID` manifest filter prevents this in current code. If you see missing syms from an old run, use `--retry-failed` to reload the affected chunks. |
 | `ValueError: Cannot infer date from filename` | Databento changed filename format | Check the downloaded CSV filename; report the new pattern to update the regex |
 | `request_id already exists with different parameters` | `--request-id` collision | Omit `--request-id` to auto-generate a new one, or use `--retry-failed` to resume the original run |
 | `Job ... failed at Databento` | Databento rejected or failed the batch job | Check the error detail in the log; run `retry_failed.sh` after the cause is resolved |

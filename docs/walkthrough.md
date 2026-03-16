@@ -125,9 +125,15 @@ For each chunk, the pipeline does:
 
 #### 3.3.4 Parallel Execution
 
-Chunks run in a `ThreadPoolExecutor` (default: 4 workers). The download phase is the bottleneck — it's I/O-bound and network-bound — so parallelism here gives a real speedup. The q loader is invoked **once** after all chunks complete, because concurrent `Q.dpft` calls on the same partition would corrupt the HDB. A `fcntl.flock` file lock enforces this even if multiple orchestrator processes are running simultaneously.
+Chunks run in a `ThreadPoolExecutor` (default: 12 workers). The download phase is the bottleneck — it's I/O-bound and network-bound — so parallelism here gives a real speedup. The q loader is invoked **once** after all chunks complete, because concurrent `.Q.dpft` calls on the same partition would corrupt the HDB. A `fcntl.flock` file lock enforces this even if multiple orchestrator processes are running simultaneously.
 
-#### 3.3.5 CLI Modes
+#### 3.3.5 Pre-Flight HDB Check
+
+Before submitting any Databento API jobs, the orchestrator runs a compact q one-liner against the HDB to find which of the requested dates already have data for the target `(schema, exchange)` pair. Those dates are removed from the chunk list before any cost estimation or API submission — so re-running a command for data that already exists costs nothing and produces a clear `already in HDB — skipping` message rather than a silent no-op.
+
+This check is exchange-aware: loading XNAS.ITCH data for a date that already has XNYS.PILLAR data (but not XNAS.ITCH) correctly identifies that date as still needing to be loaded.
+
+#### 3.3.6 CLI Modes
 
 ```bash
 # Normal run
@@ -161,7 +167,7 @@ python orchestrator.py --load-only
 
 - `readManifest` — parses the JSON, normalises field names (e.g. Databento's `ohlcv-1m` → our `ohlcv_1m`), converts date strings to kdb+ date format
 - `validateManifest` — checks the CSV file actually exists on disk, the schema is known, and the row count is positive
-- `processManifests` — scans the manifest directory, skips anything already `verified` in the job store (archiving its manifest file to avoid re-processing on the next run), groups the rest, and dispatches to `loadChunkBatch`
+- `processManifests` — scans the manifest directory, filters to only the current run's manifests using the `REQUEST_ID` env var (preventing cross-contamination between concurrent parallel runs that share the same staging directory), skips anything already `verified` in the job store (archiving its manifest file), groups the rest by `(date, schema)`, and dispatches to `loadChunkBatch`
 
 ---
 

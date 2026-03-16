@@ -606,7 +606,8 @@ def _acquire_lock_with_timeout(fh, timeout_s: int = 300) -> None:
             time.sleep(5)
 
 
-def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
+def run_q_loader(package_home: Path, manifest_dir: Path,
+                 request_id: str | None = None) -> None:
     hdb_dir = os.environ.get("KDBHDB", str(package_home / "hdb"))
     loader_script = package_home / "code" / "backfill" / "loader.q"
     torq_home = os.environ.get("TORQHOME", str(package_home / "../TorQ"))
@@ -622,10 +623,68 @@ def run_q_loader(package_home: Path, manifest_dir: Path) -> None:
     lock_fh = open(lock_path, "w")
     try:
         _acquire_lock_with_timeout(lock_fh, timeout_s=300)
-        _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home)
+        _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home,
+                             request_id=request_id)
     finally:
         fcntl.flock(lock_fh, fcntl.LOCK_UN)
         lock_fh.close()
+
+
+def _hdb_already_loaded_dates(hdb_dir: Path, dates: list[date],
+                               schema: str, dataset: str) -> set[date]:
+    """Return the subset of dates already in the HDB for (schema, exchange=dataset).
+
+    Runs a compact q one-liner that reads each partition's exchange column file
+    and checks whether the target exchange is present.  Failures are swallowed
+    so a broken HDB never blocks a fresh backfill.
+    """
+    if not hdb_dir.exists() or not dates:
+        return set()
+
+    schema_internal = schema.replace("-", "_")
+    # Build kdb+ date literals: 2024.06.10 2024.06.11 (space-separated)
+    dates_literal = " ".join(d.strftime("%Y.%m.%d") for d in sorted(dates))
+
+    # Inline q script: load sym (for enumeration), then for each date check
+    # whether the target exchange appears in the partition's exchange column.
+    q_script = (
+        f'hdb:hsym`$"{hdb_dir}";'
+        f'schema:`{schema_internal};'
+        f'exch:`$"{dataset}";'
+        f'dates:{dates_literal};'
+        f'symFile:` sv hdb,`sym;'
+        f'if[count key symFile;sym:get symFile];'
+        f'existing:{{[d]'
+        f' pd:` sv hdb,(`$string d),schema;'
+        f' if[not count key pd;:0b];'
+        f' ef:` sv pd,`exchange;'
+        f' if[not count key ef;:0b];'
+        f' exch in distinct get ef'
+        f'}} each dates;'
+        f'-1 each string dates where existing;\n'
+        f'exit 0\n'
+    )
+
+    try:
+        result = subprocess.run(
+            ["q", "-q"], input=q_script, text=True,
+            capture_output=True, cwd=str(hdb_dir),
+            env={**os.environ, "TZ": "UTC"},
+            timeout=30,
+        )
+        existing: set[date] = set()
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    # q outputs dates as YYYY.MM.DD; convert to ISO YYYY-MM-DD
+                    existing.add(date.fromisoformat(line.replace(".", "-")))
+                except ValueError:
+                    pass
+        return existing
+    except Exception as exc:
+        log.warning(_j(f"Pre-flight HDB check failed (proceeding anyway): {exc}"))
+        return set()
 
 
 def _run_ref_ingest(symbols: list[str], start: date, end: date) -> None:
@@ -660,16 +719,24 @@ def _run_ref_ingest(symbols: list[str], start: date, end: date) -> None:
 
 
 def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
-                         hdb_dir: str, torq_home: str) -> None:
+                         hdb_dir: str, torq_home: str,
+                         request_id: str | None = None) -> None:
     # Pipe q commands via stdin so we can load the script then call runLoader[].
     # cwd=package_home ensures relative \l paths inside loader.q resolve correctly.
     q_script = "\\l code/backfill/loader.q\nrunLoader[]\nexit 0\n"
     cmd = ["q", "-q"]
+    jobs_file = manifest_dir.parent / "backfill_jobs"
     env = {**os.environ,
            "STAGING_DIR": str(manifest_dir.parent.parent),
+           "JOBS_FILE": str(jobs_file.resolve()),
            "KDBHDB": hdb_dir,
            "TORQHOME": torq_home,
            "TZ": "UTC"}
+    # Pass REQUEST_ID so manifest.q can filter to only this run's manifests,
+    # preventing cross-contamination when parallel backfill runs share the
+    # staging/metadata/manifests/ directory.
+    if request_id:
+        env["REQUEST_ID"] = request_id
 
     log.info(_j(f"Invoking q loader: cwd={package_home}"))
     result = subprocess.run(
@@ -1035,8 +1102,8 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
 
     print(f"\n{'request_id':<40} {'schema':<10} {'chunks':>6} "
           f"{'submitted':>9} {'running':>7} {'downloaded':>10} "
-          f"{'loaded':>6} {'failed':>6}")
-    print("-" * 100)
+          f"{'loaded':>6} {'verified':>8} {'failed':>6}")
+    print("-" * 110)
 
     for req_id, recs in sorted(by_req.items()):
         counts = Counter(r.status for r in recs)
@@ -1046,6 +1113,7 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
               f"{counts.get('running', 0):>7} "
               f"{counts.get('downloaded', 0):>10} "
               f"{counts.get('loaded', 0):>6} "
+              f"{counts.get('verified', 0):>8} "
               f"{counts.get('failed', 0):>6}")
 
         # Print failed chunks with their error messages
@@ -1237,6 +1305,29 @@ def main(argv=None):
                              args.chunk_size, args.schema, args.dataset,
                              stype_in=args.stype_in)
 
+    # ---- Pre-flight HDB check: skip dates already loaded for this exchange ----
+    hdb_dir = Path(os.environ.get("KDBHDB", str(PACKAGE_HOME / "hdb")))
+    all_dates = sorted({c.date for c in chunks})
+    existing_dates = _hdb_already_loaded_dates(
+        hdb_dir, all_dates, args.schema, args.dataset)
+    if existing_dates:
+        skipped_chunks = [c for c in chunks if c.date in existing_dates]
+        chunks = [c for c in chunks if c.date not in existing_dates]
+        log.warning(_j(
+            f"Pre-flight: {len(skipped_chunks)} chunk(s) already in HDB "
+            f"(exchange={args.dataset} schema={args.schema}) — skipped before API submission. "
+            f"Dates: {sorted(str(d) for d in existing_dates)}"
+        ))
+        print(f"\nNOTE: {len(skipped_chunks)} chunk(s) already in HDB — skipping "
+              f"(saves API cost):")
+        for d in sorted(existing_dates):
+            print(f"  {args.dataset}  {args.schema}  {d}  — already loaded")
+        if not chunks:
+            print("\nAll requested chunks already in HDB. Nothing to do.\n")
+            log.info(_j("Pre-flight: all chunks already present, exiting cleanly"))
+            return
+        print()
+
     log.info(_j(f"request_id={request_id} chunks={len(chunks)} "
                 f"symbols={len(symbols)} dates={start}..{end}"))
 
@@ -1277,7 +1368,7 @@ def main(argv=None):
     # ---- Invoke q loader for all downloaded manifests ----
     if not skip_load and succeeded > 0:
         try:
-            run_q_loader(PACKAGE_HOME, manifest_dir)
+            run_q_loader(PACKAGE_HOME, manifest_dir, request_id=request_id)
         except Exception as exc:
             log.error(_j(f"q loader failed: {exc}"))
             sys.exit(1)

@@ -6,7 +6,8 @@
 //
 // In production, replace the CSV paths with your actual data provider's output.
 
-\l schema/schema.q
+// Use PACKAGEHOME-relative path so this file works when loaded from any CWD.
+system "l ",$[count s:getenv`PACKAGEHOME;s,"/schema/schema.q";"schema/schema.q"];
 
 if[not `lg in key `.;
     .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}

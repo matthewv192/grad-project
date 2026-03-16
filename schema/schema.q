@@ -20,34 +20,38 @@
 //   side      -> side   (A=Ask/sell-initiated, B=Bid/buy-initiated, N=None)
 //   conditions -> conditions (exchange condition codes)
 //   action    -> ignored at this stage (only "T" trade records kept)
-trades:([]
-    date:`date$();
-    time:`timestamp$();
-    sym:`symbol$();
-    exchange:`symbol$();
-    price:`float$();
-    size:`long$();
-    side:`symbol$();
-    conditions:`symbol$();
-    sequence:`long$();
-    instrument_id:`long$()
- );
+// Guard: do not redefine if already loaded from HDB (would clobber partition data)
+if[not `trades in tables[];
+    trades:([]
+        date:`date$();
+        time:`timestamp$();
+        sym:`symbol$();
+        exchange:`symbol$();
+        price:`float$();
+        size:`long$();
+        side:`symbol$();
+        conditions:`symbol$();
+        sequence:`long$();
+        instrument_id:`long$()
+    )];
 
 // ohlcv_1m — one-minute OHLCV bars from Databento.
 // Works with any Databento dataset that supports the "ohlcv-1m" schema.
 // 'time' is the bar *open* time (start of the 1-minute window).
-ohlcv_1m:([]
-    date:`date$();
-    time:`timestamp$();
-    sym:`symbol$();
-    exchange:`symbol$();
-    open:`float$();
-    high:`float$();
-    low:`float$();
-    close:`float$();
-    volume:`long$();
-    instrument_id:`long$()
- );
+// Guard: do not redefine if already loaded from HDB (would clobber partition data)
+if[not `ohlcv_1m in tables[];
+    ohlcv_1m:([]
+        date:`date$();
+        time:`timestamp$();
+        sym:`symbol$();
+        exchange:`symbol$();
+        open:`float$();
+        high:`float$();
+        low:`float$();
+        close:`float$();
+        volume:`long$();
+        instrument_id:`long$()
+    )];
 
 // ---------------------------------------------------------------------------
 // Job tracking table

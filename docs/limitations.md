@@ -75,8 +75,8 @@ Each chunk is one symbol × one exchange × one day. A request for 100 symbols o
 ### Partition write lock is not safe on network filesystems
 `acquireWriteLock` in `loader.q` uses `mkdir` as an atomic lock. POSIX guarantees atomicity only on local filesystems. On NFS or CIFS, two processes can both succeed, potentially corrupting a partition. Keep the HDB on local storage.
 
-### Python-side flock only prevents conflicts on a single machine
-The `fcntl.flock` call in `run_q_loader` (in `orchestrator.py`) prevents two concurrent loader invocations from the same Python process on the same host. It does not prevent two separate machines from writing to the same HDB simultaneously.
+### Python-side flock serialises loader invocations on a single host
+The `fcntl.flock` call in `run_q_loader` serialises q loader invocations from concurrent orchestrator processes on the same host, preventing concurrent `.Q.dpft` calls on the same partition. The `REQUEST_ID` env var passed to each q loader invocation ensures each process only loads its own manifests, preventing cross-run data contamination in the shared staging directory. Neither mechanism protects against two separate hosts writing to the same HDB simultaneously.
 
 ---
 

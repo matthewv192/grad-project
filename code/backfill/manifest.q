@@ -133,6 +133,19 @@ processManifests:{[stagingPath]
 
     if[0=count parsed; :0j];
 
+    // If REQUEST_ID env var is set, restrict to manifests for this run only.
+    // This prevents a parallel backfill's q loader from grabbing manifests
+    // written by a concurrent run sharing the same staging directory.
+    reqId:getenv`REQUEST_ID;
+    if[count reqId;
+        reqIdSym:`$reqId;
+        matchIdx:where reqIdSym={x`request_id} each parsed;
+        parsed:parsed matchIdx;
+        validPaths:validPaths matchIdx
+    ];
+
+    if[0=count parsed; :0j];
+
     // validate
     validatedIdx:where @[{validateManifest x; 1b};;{[e] 0b}] each parsed;
     validParsed:parsed validatedIdx;

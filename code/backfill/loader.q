@@ -212,11 +212,22 @@ updateJsonFile:{[p;updates]
     if[count mvErr; @[hdel;tmp;::]; '"updateJsonFile rename failed: ",mvErr]
  };
 
-// updateJobRecord — write status back to the Python job store.
+// updateJobRecord — write status back to the kdb binary job store.
+// Reads JOBS_FILE env var (set by orchestrator before spawning this process).
+// Falls back gracefully if the file does not yet exist (e.g. in unit tests).
 updateJobRecord:{[chunkId;newStatus;errMsg]
-    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
-    p:` sv (hsym`$stagingStr,"/metadata/jobs"),`$(string[chunkId],".json");
-    updateJsonFile[p; `status`error_msg`updated_at!(string newStatus;errMsg;string .z.p)];
+    jobsFile:hsym`$$[count s:getenv`JOBS_FILE;s;
+        $[count sd:getenv`STAGING_DIR;sd;"staging"],"/metadata/backfill_jobs"];
+    if[count key jobsFile;
+        jobs:get jobsFile;
+        cid:`$string chunkId;
+        jobs:update status:newStatus, updated_at:.z.p from jobs where chunk_id=cid;
+        if[count errMsg;
+            idx:first where jobs[`chunk_id]=cid;
+            if[not null idx; jobs[idx;`error_msg]:enlist errMsg]
+        ];
+        jobsFile set jobs
+    ];
     .lg.o[`loader;"job record updated: ",string[chunkId]," → ",string newStatus]
  };
 
@@ -261,11 +272,16 @@ flushSymbologyMap:{[]
     `.loader.symPending set 0#.loader.symPending
  };
 
-// updateJobRecordTimestamps — write min_ts/max_ts back to the Python job store.
+// updateJobRecordTimestamps — write min_ts/max_ts back to the kdb binary job store.
 updateJobRecordTimestamps:{[chunkId;minTs;maxTs]
-    stagingStr:$[count s:getenv`STAGING_DIR;s;"staging"];
-    p:` sv (hsym`$stagingStr,"/metadata/jobs"),`$(string[chunkId],".json");
-    updateJsonFile[p; `min_ts`max_ts`updated_at!(string minTs;string maxTs;string .z.p)]
+    jobsFile:hsym`$$[count s:getenv`JOBS_FILE;s;
+        $[count sd:getenv`STAGING_DIR;sd;"staging"],"/metadata/backfill_jobs"];
+    if[count key jobsFile;
+        jobs:get jobsFile;
+        cid:`$string chunkId;
+        jobs:update min_ts:minTs, max_ts:maxTs, updated_at:.z.p from jobs where chunk_id=cid;
+        jobsFile set jobs
+    ]
  };
 
 // updateMetrics — append load timing to the per-chunk metrics JSON file.
@@ -290,7 +306,12 @@ loadChunkBatch:{[manifests]
     
     partDateDir:` sv HDB_DIR,`$string partDate;
 
-    // Fast-path idempotency: exclude chunks loaded by checking exchange
+    // Fast-path idempotency: skip any manifest whose (date, schema, exchange)
+    // triple is already present in the HDB partition.  The REQUEST_ID filter
+    // in processManifests (manifest.q) ensures we only see manifests for this
+    // run, so the exchange check is safe: if the exchange is present it was
+    // written by a previous completed run for this exact chunk, not by a
+    // concurrent parallel run for a different request.
     pendingIdx:where not {[partDateDir;schema;m] checkExchangeLoaded[partDateDir;schema;m`exchange]}[partDateDir;schema;] each manifests;
     pending:manifests pendingIdx;
     

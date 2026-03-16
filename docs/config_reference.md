@@ -106,7 +106,7 @@ Redirect stdout to `logs/` if you also want console output captured:
 | `--status` | No | Print a summary of all job statuses and exit; combine with `--request-id` to filter to one request |
 | `--dry-run` | No | Estimate cost and print chunk plan; do not submit or download |
 | `--download-only` | No | Download and stage only; do not invoke the q loader |
-| `--load-only` | No | Skip API calls; run the q loader on existing staged manifests |
+| `--load-only` | No | Skip API calls; run the q loader on existing staged manifests. Does not filter by request ID — processes all pending manifests in the staging directory. |
 | `--metrics` | No | Print per-chunk timing metrics and exit |
 | `--stype-in` | No | Databento symbol type passed to submit/cost API calls (default: `raw_symbol`). Use `continuous` for continuous futures contracts or `instrument_id` for numeric IDs. |
 

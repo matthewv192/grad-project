@@ -19,8 +19,11 @@
 //   and the most recent revision within that window is selected.  Pass 0Np
 //   (null) to use all available factors (i.e. the current/latest revision).
 
-\l schema/schema.q
-\l code/reference/ref_tables.q
+// Use PACKAGEHOME-relative paths so this file can be loaded from any CWD
+// (e.g. after `q hdb` which changes CWD to the HDB directory).
+.adjlib.pkg:$[count s:getenv`PACKAGEHOME;s;""];
+system "l ",$[count .adjlib.pkg;.adjlib.pkg,"/schema/schema.q";"schema/schema.q"];
+system "l ",$[count .adjlib.pkg;.adjlib.pkg,"/code/reference/ref_tables.q";"code/reference/ref_tables.q"];
 
 if[not `lg in key `.;
     .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}

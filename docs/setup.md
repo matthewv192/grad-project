@@ -117,8 +117,16 @@ Supported datasets include: `XNAS.ITCH`, `XNYS.PILLAR`, `IEXG.TOPS`, `EQUS.MINI`
 
 ```bash
 cd ~/grad-project
-q hdb
+q -q
 ```
+
+Then in q:
+
+```q
+\l hdb
+```
+
+> **Note:** `\l hdb` (or `q hdb`) changes q's working directory to `hdb/`. Load any additional scripts (e.g. `adjlib.q`) **before** `\l hdb`, or start with `q -q` and load the HDB explicitly.
 
 ```q
 / Row counts by exchange for a specific date
@@ -160,13 +168,23 @@ KDBHDB=/path/to/hdb ./scripts/run_tests.sh
 ## 9. Check backfill status
 
 ```bash
-./scripts/backfill_status.sh
+./bin/backfill --status
 ```
+
+Filter to a specific request:
+
+```bash
+./bin/backfill --status --request-id req_20240603_120000_abc123
+```
+
+The `scripts/backfill_status.sh` wrapper also works and accepts the same flags.
 
 ---
 
 ## 10. Retry failed chunks
 
 ```bash
-./scripts/retry_failed.sh
+./bin/backfill --retry-failed
 ```
+
+The `scripts/retry_failed.sh` wrapper also works and accepts the same flags.

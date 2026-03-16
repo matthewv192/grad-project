@@ -222,8 +222,12 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Union of all field names (preserving first-seen order) so that rows with
+    # different schemas (e.g. after adding loaded_at to an existing CSV) can be
+    # written together.  Missing values are written as empty string.
+    all_fields: list[str] = list(dict.fromkeys(k for row in rows for k in row.keys()))
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=all_fields, restval="")
         writer.writeheader()
         writer.writerows(rows)
     log.info(f"Wrote {len(rows)} rows to {path}")
