@@ -69,7 +69,8 @@ Chunk plan for req_20240117_120000_abc123:
   Total: 2 chunk(s), estimated $0.0010
   Limit:  $50.00
 
-[████████████████████] 2/2 chunks complete
+  [1/2] AAPL 2024-01-17 — ok
+  [2/2] MSFT 2024-01-17 — ok
 
 ============================================================
   Backfill Summary — req_20240117_120000_abc123
@@ -78,11 +79,12 @@ Chunk plan for req_20240117_120000_abc123:
   STATUS : SUCCESS (2 chunk(s) verified)
   SYMBOLS: AAPL, MSFT
 
-  Exchange             Rows  Symbols
+  Exchange                     Rows  Symbols
   -------------------------------------------------------
-  XNAS.ITCH           2,816  AAPL, MSFT
+  XNAS.ITCH                   2,816  AAPL, MSFT
   -------------------------------------------------------
-  TOTAL               2,816
+  TOTAL                       2,816
+============================================================
 ```
 
 Then query the HDB:
