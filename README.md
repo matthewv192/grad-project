@@ -109,7 +109,7 @@ grad-project/
 
 - **Multi-exchange partitions** — XNAS.ITCH, XNYS.PILLAR, IEXG.TOPS, EQUS.MINI (and others) can coexist in the same HDB partition date. Each row carries an `exchange` column.
 - **Idempotent loads** — Re-running the same request skips already-verified chunks. Supplying a duplicate `--request-id` with different parameters aborts with a clear error.
-- **Job store** — Every chunk tracks status (`pending` → `downloaded` → `loaded` → `verified`) in `staging/metadata/jobs/`.
+- **Job store** — Every chunk tracks status (`pending` → `downloaded` → `loaded` → `verified`) in a kdb binary table at `staging/metadata/backfill_jobs`.
 - **Cost safeguard** — `BACKFILL_MAX_COST_USD` (default $50) blocks over-budget requests before API submission. Unexpected cost-estimation failures abort the run rather than silently disabling the guard.
 - **Quality checks** — Duplicate detection (exchange-aware), ordering validation, and null checking on every loaded chunk. Missing schema columns are logged as errors.
 - **Symbology map** — `staging/reference/symbology_map.csv` accumulates `(sym, instrument_id, exchange)` pairs across all loads, written once per run.

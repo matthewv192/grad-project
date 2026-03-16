@@ -41,9 +41,9 @@ system "mkdir -p ",TEST_REF_DIR;
 
 // corp_actions.csv — 2 rows
 (hsym`$TEST_REF_DIR,"/corp_actions.csv") 0: (
-    "sym,action_type,ex_date,record_date,effective_date,factor,description";
-    "AAPL,split,2024-06-10,2024-06-09,2024-06-10,0.5,2-for-1 stock split";
-    "MSFT,dividend,2024-05-15,2024-05-14,2024-05-15,0.998,Quarterly dividend"
+    "sym,action_type,ex_date,record_date,effective_date,factor,description,loaded_at";
+    "AAPL,split,2024-06-10,2024-06-09,2024-06-10,0.5,2-for-1 stock split,2024.01.01T00:00:00.000000000";
+    "MSFT,dividend,2024-05-15,2024-05-14,2024-05-15,0.998,Quarterly dividend,2024.01.01T00:00:00.000000000"
  );
 
 // adj_factors.csv — 4 rows (two symbols, two dates each)
@@ -90,6 +90,7 @@ assertEq["corp_actions sym type";         type ref_corp_actions`sym;         11h
 assertEq["corp_actions action_type type"; type ref_corp_actions`action_type;  11h];
 assertEq["corp_actions ex_date type";     type ref_corp_actions`ex_date;      14h];
 assertEq["corp_actions factor type";      type ref_corp_actions`factor;        9h];
+assertEq["corp_actions loaded_at type";   type ref_corp_actions`loaded_at;    12h];
 
 // Spot-check values
 aaplFactor:exec first factor from ref_corp_actions where sym=`AAPL, action_type=`split;

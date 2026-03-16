@@ -30,7 +30,7 @@ loadRefTable:{[tableSymbol;filename;typeStr]
  };
 
 loadRefSecurityMaster:{[] loadRefTable[`ref_security_master;"security_master.csv";"SJSSSDD"]};
-loadRefCorpActions:{[]    loadRefTable[`ref_corp_actions;"corp_actions.csv";"SSDDDFS"]};
+loadRefCorpActions:{[]    loadRefTable[`ref_corp_actions;"corp_actions.csv";"SSDDDFSP"]};
 loadRefAdjFactors:{[]     loadRefTable[`ref_adj_factors;"adj_factors.csv";"SDFFFP"]};
 
 // ---------------------------------------------------------------------------

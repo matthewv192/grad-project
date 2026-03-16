@@ -99,7 +99,7 @@ A backfill request (e.g. 50 symbols, 30 days) is immediately broken into small i
 
 #### 3.3.2 Job Store (`JobStore`, `JobRecord`)
 
-Every chunk has a `JobRecord` stored as a JSON file in `staging/metadata/jobs/<chunk_id>.json`. The record tracks the full lifecycle:
+Every chunk has a `JobRecord` persisted to a kdb binary table at `staging/metadata/backfill_jobs`. The record tracks the full lifecycle:
 
 ```
 submitted → running → downloaded → loaded → verified
@@ -108,7 +108,7 @@ submitted → running → downloaded → loaded → verified
 
 Every state transition is written to disk **before** the action is taken. This means if the process crashes, on restart it reads the job store and knows exactly which chunks were completed, which were in-flight, and which failed. There is no need to re-query the Databento API or re-download data that already exists on disk.
 
-**Why JSON files rather than a database?** For a graduate project running on a single machine, a database adds operational complexity with no real benefit. JSON files are inspectable with a text editor, trivially backed up, and simple to reason about. The writes are atomic (write to `.tmp`, then rename) so a crash mid-write never leaves a corrupt record.
+`KdbJobStore` in `orchestrator.py` owns all reads and writes. Each operation spawns a q subprocess running `code/backfill/jobstore.q`; the JSON command is passed via the `JOBSTORE_CMD` environment variable and results are returned as JSON on stdout. A `threading.Lock` plus `fcntl.flock` serialise concurrent writes within and across processes.
 
 #### 3.3.3 The Per-Chunk Pipeline (`run_chunk`)
 
@@ -224,7 +224,7 @@ If any check fails, the chunk is marked `failed` in the job store rather than wr
 Loads static reference data CSVs into in-memory kdb+ tables:
 
 - `ref_security_master` — maps symbols to instrument IDs, exchanges, currencies
-- `ref_corp_actions` — stock splits, dividends, mergers (used for price adjustment)
+- `ref_corp_actions` — stock splits, dividends, mergers (used for price adjustment); append-only with a `loaded_at` timestamp so the full revision history is preserved for point-in-time queries
 - `ref_adj_factors` — cumulative adjustment factors per symbol per date, with a `loaded_at` timestamp on each row so multiple revisions can coexist (point-in-time queries)
 - `ref_symbology_map` — auto-populated by the loader: maps Databento instrument IDs to normalised symbols
 

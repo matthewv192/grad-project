@@ -365,10 +365,10 @@ The specific cause is always on the line just before the status transitions. For
 [loader] job record updated: req_... → failed
 ```
 
-For a detailed look at a specific failed chunk, inspect its job store record directly:
+For a detailed look at all job records, query the kdb job store directly:
 
 ```bash
-cat staging/metadata/jobs/<chunk_id>.json
+echo '{"op":"loadAll"}' | JOBS_FILE=$(pwd)/staging/metadata/backfill_jobs q -q code/backfill/jobstore.q
 ```
 
 The `error_msg` and `failure_type` fields contain the exact failure reason.
@@ -382,10 +382,10 @@ The `error_msg` and `failure_type` fields contain the exact failure reason.
 | `LD_LIBRARY_PATH: unbound variable` | `set -u` with unset var | Already fixed — `setenv.sh` uses `${LD_LIBRARY_PATH:-}` |
 | `TORQHOME = ` (empty) | `setenv.sh` sourced before `cd grad-project` | Always source from inside `grad-project/` |
 | `q loader exited 1` | q can't find `schema/schema.q` | Ensure you're running from inside `grad-project/` |
-| `write lock held for ...` | Stale lock from a crashed run | Run `find hdb -name ".*.lock" -type d -exec rmdir {} +` then reset the chunk status to `downloaded` in `staging/metadata/jobs/` |
+| `write lock held for ...` | Stale lock from a crashed run | Run `find hdb -name ".*.lock" -type d -exec rmdir {} +` then resubmit with `--retry-failed` |
 | `ValueError: Cannot infer date from filename` | Databento changed filename format | Check the downloaded CSV filename; report the new pattern to update the regex |
 | `request_id already exists with different parameters` | `--request-id` collision | Omit `--request-id` to auto-generate a new one, or use `--retry-failed` to resume the original run |
 | `Job ... failed at Databento` | Databento rejected or failed the batch job | Check the error detail in the log; run `retry_failed.sh` after the cause is resolved |
-| Chunk shows `failed` in status | API error or cost limit hit | Run `retry_failed.sh`; inspect error in `staging/metadata/jobs/` |
+| Chunk shows `failed` in status | API error or cost limit hit | Run `retry_failed.sh`; inspect error via `--status` or query `staging/metadata/backfill_jobs` directly |
 | Old stale manifest causes validation error | CSV file deleted but manifest remains | Safe to ignore — logged as a warning, does not block other chunks |
 | `ModuleNotFoundError: No module named 'databento'` | venv not found | Run `scripts/setup_python.sh` to create the venv, then retry |

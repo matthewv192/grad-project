@@ -5,7 +5,7 @@ Responsibilities (Python side of the Python↔q split):
   - Chunking: one Databento job per (day × symbol-batch). Each chunk is
     independent so a single failure doesn't block everything else.
   - Job store: every state transition is written to
-    staging/metadata/jobs/<chunk_id>.json so a crashed run can resume.
+    staging/metadata/backfill_jobs (binary kdb table) so a crashed run can resume.
   - Idempotency: before submitting a chunk we check its stored status and
     skip (or fast-forward) accordingly.
   - Retry: --retry-failed re-queues failed chunks with exponential backoff
@@ -134,7 +134,7 @@ class Chunk:
 @dataclass
 class JobRecord:
     """
-    Persistent state for one Chunk. Stored as JSON in staging/metadata/jobs/.
+    Persistent state for one Chunk. Stored in staging/metadata/backfill_jobs (kdb binary table).
     Status lifecycle:
       submitted → running → downloaded → loaded → verified
                                                ↘ failed
@@ -173,50 +173,165 @@ class JobRecord:
 
 
 # ---------------------------------------------------------------------------
-# Job store — one JSON file per chunk in staging/metadata/jobs/
+# Job store — kdb binary table at staging/metadata/backfill_jobs
 # ---------------------------------------------------------------------------
 
-class JobStore:
+def _to_kdb_ts(iso_str: str) -> str:
+    """Convert an ISO datetime string to kdb+ timestamp format.
+
+    Input:  "2024-01-15T12:00:00.123456+00:00"  (from datetime.isoformat())
+    Output: "2024.01.15T12:00:00.123456000"      (what q's "P"$ parser expects)
+    Returns "" for empty/None input.
     """
-    Lightweight file-based job store.
-    Each chunk_id maps to a JSON file: <jobs_dir>/<chunk_id>.json
-    Writing is atomic-ish: we write to a temp file then rename.
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y.%m.%dT%H:%M:%S.") + f"{dt.microsecond:06d}000"
+    except (ValueError, TypeError):
+        return ""
+
+
+def _from_kdb_ts(kdb_str: str) -> str:
+    """Convert a kdb+ timestamp string back to ISO format.
+
+    Input:  "2024.01.15T12:00:00.123456000"  (from q's string of timestamp)
+    Output: "2024-01-15T12:00:00.123456+00:00"
+    Returns "" for empty or null ("0Np") input.
+    """
+    if not kdb_str or kdb_str == "0Np":
+        return ""
+    try:
+        date_part = kdb_str[:10].replace(".", "-")   # "2024.01.15" → "2024-01-15"
+        time_part = kdb_str[11:19]                    # "12:00:00"
+        frac = kdb_str[20:26] if len(kdb_str) > 20 else "000000"  # 6 microsecond digits
+        return f"{date_part}T{time_part}.{frac}+00:00"
+    except (ValueError, IndexError):
+        return kdb_str
+
+
+class KdbJobStore:
+    """
+    kdb-backed persistent job store.
+
+    Each operation spawns a q subprocess that runs jobstore.q, communicating
+    via JSON on stdin/stdout.  The binary table file lives at:
+        <staging_dir>/metadata/backfill_jobs
+
+    Thread safety: a threading.Lock serialises concurrent saves within one
+    process.  A file-level flock prevents races across multiple orchestrator
+    processes.
     """
 
-    def __init__(self, staging_dir: Path):
-        self.jobs_dir = staging_dir / "metadata" / "jobs"
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, staging_dir: Path,
+                 package_home: Path = None):
+        if package_home is None:
+            package_home = PACKAGE_HOME
+        self.jobs_file = staging_dir / "metadata" / "backfill_jobs"
+        self.package_home = package_home
+        self.jobstore_script = package_home / "code" / "backfill" / "jobstore.q"
+        self._lock = __import__("threading").Lock()
+        self.jobs_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def _path(self, chunk_id: str) -> Path:
-        return self.jobs_dir / f"{chunk_id}.json"
+    def _run_q(self, cmd: dict) -> str:
+        """Spawn a q subprocess, load jobstore.q, return stdout.
 
-    def save(self, record: JobRecord) -> None:
-        record.touch()
-        tmp = self._path(record.chunk_id).with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(record.to_dict(), f, indent=2)
-        tmp.rename(self._path(record.chunk_id))
+        The JSON command is passed via the JOBSTORE_CMD env var.  The script is
+        loaded via stdin to avoid the kdb+ quirk where `q -q script.q` ignores
+        the script file when stdin is a pipe.
+        """
+        q_script = "\\l code/backfill/jobstore.q\n"
+        env = {**os.environ,
+               "JOBS_FILE": str(self.jobs_file.resolve()),
+               "JOBSTORE_CMD": json.dumps(cmd),
+               "TZ": "UTC"}
+        result = subprocess.run(
+            ["q", "-q"],
+            input=q_script,
+            text=True,
+            cwd=str(self.package_home),
+            env=env,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            raise RuntimeError(
+                f"jobstore.q failed (rc={result.returncode}): {stderr}"
+            )
+        return result.stdout.strip()
 
-    def load(self, chunk_id: str) -> JobRecord | None:
-        p = self._path(chunk_id)
-        if not p.exists():
-            return None
-        with open(p) as f:
-            return JobRecord.from_dict(json.load(f))
-
-    def load_all(self) -> list[JobRecord]:
-        records = []
-        for p in sorted(self.jobs_dir.glob("*.json")):
+    def _run_q_write(self, cmd: dict) -> None:
+        """Run a write operation with file-level locking for cross-process safety."""
+        lock_path = self.jobs_file.parent / ".jobstore.lock"
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                with open(p) as f:
-                    records.append(JobRecord.from_dict(json.load(f)))
-            except Exception as exc:
-                log.warning(_j(f"Could not read job record {p.name}: {exc}"))
-        return records
+                self._run_q(cmd)
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
 
-    def load_failed(self) -> list[JobRecord]:
-        return [r for r in self.load_all()
-                if r.status == "failed" and r.retries < MAX_RETRIES]
+    def _record_to_dict(self, record: "JobRecord") -> dict:
+        """Convert a JobRecord to a JSON-serializable dict for jobstore.q."""
+        d = record.to_dict()
+        d["created_at"] = _to_kdb_ts(d.get("created_at", ""))
+        d["updated_at"] = _to_kdb_ts(d.get("updated_at", ""))
+        d.setdefault("min_ts", "")
+        d.setdefault("max_ts", "")
+        d.setdefault("failure_type", "")
+        d.setdefault("file_path", "")
+        d.setdefault("dataset", record.dataset if hasattr(record, "dataset") else DEFAULT_DATASET)
+        return d
+
+    def _dict_to_record(self, d: dict) -> "JobRecord":
+        """Convert a dict from jobstore.q JSON output back to a JobRecord."""
+        d = dict(d)
+        d["created_at"] = _from_kdb_ts(d.get("created_at", ""))
+        d["updated_at"] = _from_kdb_ts(d.get("updated_at", ""))
+        # error_msg comes back as a list from q (generic list column)
+        if isinstance(d.get("error_msg"), list):
+            d["error_msg"] = d["error_msg"][0] if d["error_msg"] else ""
+        # date comes back as kdb+ format "YYYY.MM.DD" — normalise to ISO "YYYY-MM-DD"
+        date_val = d.get("date", "")
+        if date_val and "." in date_val:
+            d["date"] = date_val.replace(".", "-")
+        return JobRecord.from_dict(d)
+
+    def save(self, record: "JobRecord") -> None:
+        record.touch()
+        with self._lock:
+            self._run_q_write({
+                "op": "upsert",
+                "record": self._record_to_dict(record),
+            })
+
+    def load(self, chunk_id: str) -> "JobRecord | None":
+        out = self._run_q({"op": "load", "chunk_id": chunk_id})
+        if not out:
+            return None
+        rows = json.loads(out)
+        if not rows:
+            return None
+        return self._dict_to_record(rows[0])
+
+    def load_all(self) -> "list[JobRecord]":
+        out = self._run_q({"op": "loadAll"})
+        if not out:
+            return []
+        rows = json.loads(out)
+        return [self._dict_to_record(r) for r in rows]
+
+    def load_failed(self) -> "list[JobRecord]":
+        out = self._run_q({"op": "loadFailed", "max_retries": MAX_RETRIES})
+        if not out:
+            return []
+        rows = json.loads(out)
+        return [self._dict_to_record(r) for r in rows]
+
+
+# Keep backward-compatible name
+JobStore = KdbJobStore
 
 
 # ---------------------------------------------------------------------------
@@ -1156,7 +1271,7 @@ def main(argv=None):
     if failed:
         log.warning(_j(
             f"{failed} chunk(s) failed. Run with --retry-failed to requeue, "
-            f"or check staging/metadata/jobs/ for details."
+            f"or check staging/metadata/backfill_jobs for details."
         ))
 
     # ---- Invoke q loader for all downloaded manifests ----

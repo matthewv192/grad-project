@@ -47,7 +47,7 @@ assertEq["ohlcv_1m types";
 // backfill_jobs
 // ---------------------------------------------------------------------------
 
-expectedJobCols:`request_id`chunk_id`databento_job_id`schema`symbols`start_date`end_date`status`retries`error_msg`file_path`file_paths`checksum`row_count`min_ts`max_ts`created_at`updated_at;
+expectedJobCols:`request_id`chunk_id`databento_job_id`dataset`schema`symbols`date`status`retries`error_msg`failure_type`file_path`file_paths`checksum`row_count`min_ts`max_ts`created_at`updated_at;
 
 assertEq["backfill_jobs cols"; cols backfill_jobs; expectedJobCols];
 

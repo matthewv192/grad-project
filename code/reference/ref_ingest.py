@@ -62,6 +62,7 @@ def fetch_corp_actions(symbols: list[str]) -> list[dict]:
                     "Install with: pip install yfinance")
         return []
 
+    loaded_at = _now_kdb()
     rows = []
     for sym in symbols:
         try:
@@ -85,6 +86,7 @@ def fetch_corp_actions(symbols: list[str]) -> list[dict]:
                     "effective_date": str(ex_d),
                     "factor": round(1.0 / ratio_f, 8),
                     "description": f"{ratio_f:.4g}:1 stock split",
+                    "loaded_at": loaded_at,
                 })
 
             # ---- Dividends ----
@@ -131,6 +133,7 @@ def fetch_corp_actions(symbols: list[str]) -> list[dict]:
                             "effective_date": str(ex_d),
                             "factor": round(factor, 8),
                             "description": f"Cash dividend ${amount_f:.4f}",
+                            "loaded_at": loaded_at,
                         })
 
             n_sym = sum(1 for r in rows if r["sym"] == sym)
@@ -310,15 +313,11 @@ def ingest_ref_data(symbols: list[str], start: date, end: date,
 
     log.info(f"Ingesting reference data: symbols={symbols} range={start}..{end}")
 
-    # ---- Corp actions: fetch full history, upsert ----
+    # ---- Corp actions: fetch full history, append (PIT — never overwrite) ----
     corp_actions = fetch_corp_actions(symbols)
     if corp_actions:
-        _upsert_csv(
-            ref_dir / "corp_actions.csv",
-            corp_actions,
-            key_cols=["sym", "ex_date", "action_type"],
-        )
-        log.info(f"Corp actions: {len(corp_actions)} event(s) persisted")
+        _append_csv(ref_dir / "corp_actions.csv", corp_actions)
+        log.info(f"Corp actions: {len(corp_actions)} event(s) appended")
     else:
         log.info(f"No corp actions fetched — adj_factors will use factor=1.0")
 
@@ -373,12 +372,14 @@ def _synthetic_corp_actions() -> list[dict]:
             "ex_date": "2024-06-10", "record_date": "2024-06-09",
             "effective_date": "2024-06-10", "factor": "0.5",
             "description": "2-for-1 stock split (synthetic test data)",
+            "loaded_at": "2024.01.01T00:00:00.000000000",
         },
         {
             "sym": "MSFT", "action_type": "dividend",
             "ex_date": "2024-05-15", "record_date": "2024-05-14",
             "effective_date": "2024-05-15", "factor": "0.998",
             "description": "Quarterly dividend (synthetic test data)",
+            "loaded_at": "2024.01.01T00:00:00.000000000",
         },
     ]
 

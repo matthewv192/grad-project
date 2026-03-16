@@ -297,6 +297,11 @@ class TestJobStore(unittest.TestCase):
         tmp_files = list(Path(self.tmp).rglob("*.tmp"))
         self.assertEqual(len(tmp_files), 0)
 
+    def test_save_creates_kdb_table_file(self):
+        self.store.save(self._make())
+        jobs_file = Path(self.tmp) / "metadata" / "backfill_jobs"
+        self.assertTrue(jobs_file.exists())
+
 
 # ---------------------------------------------------------------------------
 # estimate_cost
