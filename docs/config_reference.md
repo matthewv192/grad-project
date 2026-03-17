@@ -35,9 +35,9 @@ Each chunk is one symbol × one exchange × one day — the finest granularity
 Databento supports. This means a single symbol/day failure never blocks any
 other symbol or day.
 
-| Setting | Env var | Default | Description |
+| Setting | CLI flag | Default | Description |
 |---|---|---|---|
-| `BACKFILL_CHUNK_SIZE` | `BACKFILL_CHUNK_SIZE` | `10` | Number of symbols per Databento batch job. Larger values reduce API round-trips; smaller values give finer retry granularity. |
+| Chunk size | `--chunk-size` | `10` | Number of symbols per Databento batch job. Larger values reduce API round-trips; smaller values give finer retry granularity. |
 
 ---
 
@@ -49,7 +49,7 @@ other symbol or day.
 
 The orchestrator calls the Databento metadata API before submitting each batch job. If the estimated cost would push the total over this limit, it logs an error and aborts without submitting.
 
-If the metadata API returns a Databento error (e.g. unknown dataset), estimation returns `0.0` and the safeguard is disabled for that chunk with a warning. Unexpected errors (network fault, SDK bug) abort the run so the safeguard is never silently bypassed.
+If the metadata API returns a Databento error (e.g. unknown dataset) or an unexpected error (network fault, SDK bug), the run is aborted with a `RuntimeError` — the cost safeguard is never silently bypassed.
 
 ---
 

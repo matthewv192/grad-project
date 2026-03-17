@@ -36,7 +36,7 @@ The type casts in `readTradesCSV` and `readOhlcvCSV` (in `loader.q`) are not wra
 
 The partition merge and write block is wrapped in a protected eval that releases the write lock before signalling, so a type cast failure during the merge step will not leave a stale lock on disk. However, a failure during the initial CSV parse (before the lock is acquired) is not error-trapped and will propagate as an unhandled signal.
 
-**Recovery from stale locks (if they occur):** Clear with:
+**Stale lock recovery:** The Python-level `fcntl.flock` now includes automatic stale lock detection — if the PID that wrote the lock file is no longer running, the lock is removed and the run retries automatically. The q-level `mkdir` partition lock (`hdb/<date>/.trades.lock/`) does not have automatic stale detection; clear manually if needed:
 ```bash
 find hdb -name ".*.lock" -type d -exec rmdir {} +
 ```

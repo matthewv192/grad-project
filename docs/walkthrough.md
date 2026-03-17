@@ -90,7 +90,7 @@ Three checks before every write: duplicate natural keys, time ordering, nulls in
 ./scripts/run_tests.sh
 ```
 
-8 q tests (schema, manifest, loader, quality, symbology, ref tables, adj, integration) and 56 Python tests across `test_orchestrator.py` and `test_metrics.py`. The integration test auto-discovers the most recent HDB partition and runs live queries against it.
+8 q tests (schema, manifest, loader, quality, symbology, ref tables, adj, integration) and 208 Python tests across `test_orchestrator.py`, `test_metrics.py`, and `test_ref_ingest.py`. The integration test auto-discovers the most recent HDB partition and runs live queries against it. The ref_ingest tests include 5 live yfinance smoke tests that verify the API still returns data in the expected format.
 
 ---
 

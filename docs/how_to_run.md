@@ -294,11 +294,11 @@ hdb/
 ## Running Tests
 
 ```bash
-# Full suite — 8 q tests + 2 Python tests (integration skipped without KDBHDB)
+# Full suite — 8 q tests + 3 Python tests (integration skipped if no trades data)
 ./scripts/run_tests.sh
 ```
 
-The integration test is skipped unless `KDBHDB` points to a populated HDB. When enabled, it auto-discovers the most recent partition date and first available sym — no further configuration is needed:
+The integration test is skipped if the auto-discovered partition has no trades data. When data is present, it auto-discovers the most recent partition date and first available sym — no further configuration is needed:
 
 ```bash
 KDBHDB=/path/to/hdb ./scripts/run_tests.sh
@@ -331,6 +331,7 @@ KDBHDB=/path/to/hdb q tests/test_integration.q
 # Python tests
 python3 -m pytest tests/test_orchestrator.py -v
 python3 -m pytest tests/test_metrics.py -v
+python3 -m pytest tests/test_ref_ingest.py -v
 ```
 
 ---

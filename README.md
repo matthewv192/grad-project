@@ -139,6 +139,7 @@ grad-project/
 ├── scripts/
 │   ├── setup_python.sh     # Create venv and install Python dependencies
 │   ├── check_quality.sh    # Run quality checks on a partition
+│   ├── cleanup_staging.sh  # Remove old staging CSVs and rotated log files
 │   └── run_tests.sh        # Run the full test suite
 ├── tests/
 │   ├── test_schema.q
@@ -150,7 +151,8 @@ grad-project/
 │   ├── test_adj.q
 │   ├── test_integration.q
 │   ├── test_orchestrator.py
-│   └── test_metrics.py
+│   ├── test_metrics.py
+│   └── test_ref_ingest.py
 └── docs/
     ├── architecture.md
     ├── walkthrough.md

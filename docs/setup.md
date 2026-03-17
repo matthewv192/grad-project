@@ -167,7 +167,7 @@ cd ~/grad-project
 ./scripts/run_tests.sh
 ```
 
-This runs 8 q tests and 2 Python tests. The integration test is skipped by default (no KDBHDB set). All other tests exit 0 on success and require no API key or loaded HDB.
+This runs 8 q tests and 3 Python tests (orchestrator, metrics, ref_ingest). The integration test is skipped by default if the auto-discovered partition has no trades data. All other tests exit 0 on success and require no API key or loaded HDB.
 
 To run an individual test in isolation:
 
