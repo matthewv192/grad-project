@@ -73,22 +73,22 @@ class TestGenerateChunks(unittest.TestCase):
 
     def test_single_day_single_symbol(self):
         # 1 symbol × 1 day = 1 chunk
-        chunks = self._chunks(["AAPL"], date(2024, 1, 15), date(2024, 1, 15))
+        chunks = self._chunks(["AAPL"], date(2024, 1, 16), date(2024, 1, 16))
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].symbols, ["AAPL"])
-        self.assertEqual(chunks[0].date, date(2024, 1, 15))
+        self.assertEqual(chunks[0].date, date(2024, 1, 16))
 
     def test_symbols_batched_into_chunks(self):
         # 7 symbols × 1 day, chunk_size=10 → 1 batch of 7 = 1 chunk
         syms = [f"SYM{i:02d}" for i in range(7)]
-        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 15))
+        chunks = self._chunks(syms, date(2024, 1, 16), date(2024, 1, 16))
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].symbols, syms)
 
     def test_chunk_size_one_gives_one_chunk_per_symbol(self):
         # chunk_size=1: 7 symbols × 1 day = 7 chunks (one per symbol)
         syms = [f"SYM{i:02d}" for i in range(7)]
-        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 15),
+        chunks = self._chunks(syms, date(2024, 1, 16), date(2024, 1, 16),
                               chunk_size=1)
         self.assertEqual(len(chunks), 7)
         self.assertTrue(all(len(c.symbols) == 1 for c in chunks))
@@ -96,29 +96,29 @@ class TestGenerateChunks(unittest.TestCase):
     def test_multiple_days_multiplies_chunks(self):
         # 1 symbol × 3 days = 3 chunks
         chunks = self._chunks(["AAPL"],
-                               date(2024, 1, 15), date(2024, 1, 17))
+                               date(2024, 1, 16), date(2024, 1, 18))
         self.assertEqual(len(chunks), 3)
-        self.assertEqual(chunks[0].date, date(2024, 1, 15))
-        self.assertEqual(chunks[2].date, date(2024, 1, 17))
+        self.assertEqual(chunks[0].date, date(2024, 1, 16))
+        self.assertEqual(chunks[2].date, date(2024, 1, 18))
 
     def test_multi_day_multi_symbol(self):
         # 7 symbols × 3 days, chunk_size=10 → 1 batch per day = 3 chunks
         syms = [f"S{i}" for i in range(7)]
-        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 17))
+        chunks = self._chunks(syms, date(2024, 1, 16), date(2024, 1, 18))
         self.assertEqual(len(chunks), 3)
         self.assertTrue(all(len(c.symbols) == 7 for c in chunks))
 
     def test_multi_day_multi_symbol_chunk_size_one(self):
-        # chunk_size=1: 7 symbols × 3 days = 21 chunks
+        # chunk_size=1: 7 symbols × 3 trading days = 21 chunks
         syms = [f"S{i}" for i in range(7)]
-        chunks = self._chunks(syms, date(2024, 1, 15), date(2024, 1, 17),
+        chunks = self._chunks(syms, date(2024, 1, 16), date(2024, 1, 18),
                               chunk_size=1)
         self.assertEqual(len(chunks), 21)
 
     def test_end_date_is_inclusive(self):
         chunks = self._chunks(["AAPL"],
-                               date(2024, 1, 15), date(2024, 1, 15))
-        self.assertEqual(chunks[-1].date, date(2024, 1, 15))
+                               date(2024, 1, 16), date(2024, 1, 16))
+        self.assertEqual(chunks[-1].date, date(2024, 1, 16))
 
     def test_chunk_ids_are_all_unique(self):
         syms = [f"S{i}" for i in range(5)]
@@ -129,7 +129,7 @@ class TestGenerateChunks(unittest.TestCase):
 
     def test_chunk_carries_correct_metadata(self):
         chunks = self._chunks(["AAPL"],
-                               date(2024, 1, 15), date(2024, 1, 15))
+                               date(2024, 1, 16), date(2024, 1, 16))
         c = chunks[0]
         self.assertEqual(c.request_id, self.REQ)
         self.assertEqual(c.schema, self.SCHEMA)
@@ -138,7 +138,7 @@ class TestGenerateChunks(unittest.TestCase):
     def test_stype_in_threaded_to_chunk(self):
         """stype_in passed to generate_chunks must appear on every Chunk."""
         chunks = generate_chunks(
-            self.REQ, ["AAPL"], date(2024, 1, 15), date(2024, 1, 15),
+            self.REQ, ["AAPL"], date(2024, 1, 16), date(2024, 1, 16),
             10, self.SCHEMA, self.DATASET, stype_in="continuous",
         )
         self.assertEqual(len(chunks), 1)
@@ -146,8 +146,32 @@ class TestGenerateChunks(unittest.TestCase):
 
     def test_stype_in_default_is_raw_symbol(self):
         """Omitting stype_in must default to 'raw_symbol' on each Chunk."""
-        chunks = self._chunks(["AAPL"], date(2024, 1, 15), date(2024, 1, 15))
+        chunks = self._chunks(["AAPL"], date(2024, 1, 16), date(2024, 1, 16))
         self.assertEqual(chunks[0].stype_in, "raw_symbol")
+
+    def test_weekends_skipped(self):
+        """Sat/Sun should produce no chunks."""
+        # 2024-01-20 = Saturday, 2024-01-21 = Sunday
+        chunks = self._chunks(["AAPL"], date(2024, 1, 20), date(2024, 1, 21))
+        self.assertEqual(len(chunks), 0)
+
+    def test_holiday_skipped(self):
+        """NYSE holidays should produce no chunks."""
+        # 2024-01-15 = MLK Day
+        chunks = self._chunks(["AAPL"], date(2024, 1, 15), date(2024, 1, 15))
+        self.assertEqual(len(chunks), 0)
+
+    def test_week_with_weekend_produces_5_days(self):
+        """Mon-Sun range should produce 5 trading day chunks, not 7."""
+        # 2024-01-22 (Mon) to 2024-01-28 (Sun) — no holidays
+        chunks = self._chunks(["AAPL"], date(2024, 1, 22), date(2024, 1, 28))
+        self.assertEqual(len(chunks), 5)
+
+    def test_week_with_holiday_produces_4_days(self):
+        """Week containing MLK Day should produce 4 chunks, not 5."""
+        # 2024-01-15 (Mon=MLK) to 2024-01-19 (Fri)
+        chunks = self._chunks(["AAPL"], date(2024, 1, 15), date(2024, 1, 19))
+        self.assertEqual(len(chunks), 4)
 
 
 # ---------------------------------------------------------------------------

@@ -402,6 +402,119 @@ JobStore = KdbJobStore
 
 
 # ---------------------------------------------------------------------------
+# US equity trading calendar
+# ---------------------------------------------------------------------------
+
+# NYSE observed holidays.  All US equity exchanges (XNAS, XNYS, IEXG, EQUS)
+# follow this calendar.  Holidays are listed through 2030.  Extend as needed.
+_NYSE_HOLIDAYS: set[date] = {
+    # 2023
+    date(2023, 1, 2),   # New Year's Day (observed)
+    date(2023, 1, 16),  # MLK Day
+    date(2023, 2, 20),  # Presidents' Day
+    date(2023, 4, 7),   # Good Friday
+    date(2023, 5, 29),  # Memorial Day
+    date(2023, 6, 19),  # Juneteenth
+    date(2023, 7, 4),   # Independence Day
+    date(2023, 9, 4),   # Labor Day
+    date(2023, 11, 23), # Thanksgiving
+    date(2023, 12, 25), # Christmas
+    # 2024
+    date(2024, 1, 1),   # New Year's Day
+    date(2024, 1, 15),  # MLK Day
+    date(2024, 2, 19),  # Presidents' Day
+    date(2024, 3, 29),  # Good Friday
+    date(2024, 5, 27),  # Memorial Day
+    date(2024, 6, 19),  # Juneteenth
+    date(2024, 7, 4),   # Independence Day
+    date(2024, 9, 2),   # Labor Day
+    date(2024, 11, 28), # Thanksgiving
+    date(2024, 12, 25), # Christmas
+    # 2025
+    date(2025, 1, 1),   # New Year's Day
+    date(2025, 1, 20),  # MLK Day
+    date(2025, 2, 17),  # Presidents' Day
+    date(2025, 4, 18),  # Good Friday
+    date(2025, 5, 26),  # Memorial Day
+    date(2025, 6, 19),  # Juneteenth
+    date(2025, 7, 4),   # Independence Day
+    date(2025, 9, 1),   # Labor Day
+    date(2025, 11, 27), # Thanksgiving
+    date(2025, 12, 25), # Christmas
+    # 2026
+    date(2026, 1, 1),   # New Year's Day
+    date(2026, 1, 19),  # MLK Day
+    date(2026, 2, 16),  # Presidents' Day
+    date(2026, 4, 3),   # Good Friday
+    date(2026, 5, 25),  # Memorial Day
+    date(2026, 6, 19),  # Juneteenth
+    date(2026, 7, 3),   # Independence Day (observed)
+    date(2026, 9, 7),   # Labor Day
+    date(2026, 11, 26), # Thanksgiving
+    date(2026, 12, 25), # Christmas
+    # 2027
+    date(2027, 1, 1),   # New Year's Day
+    date(2027, 1, 18),  # MLK Day
+    date(2027, 2, 15),  # Presidents' Day
+    date(2027, 3, 26),  # Good Friday
+    date(2027, 5, 31),  # Memorial Day
+    date(2027, 6, 18),  # Juneteenth (observed)
+    date(2027, 7, 5),   # Independence Day (observed)
+    date(2027, 9, 6),   # Labor Day
+    date(2027, 11, 25), # Thanksgiving
+    date(2027, 12, 24), # Christmas (observed)
+    # 2028
+    date(2028, 1, 17),  # MLK Day
+    date(2028, 2, 21),  # Presidents' Day
+    date(2028, 4, 14),  # Good Friday
+    date(2028, 5, 29),  # Memorial Day
+    date(2028, 6, 19),  # Juneteenth
+    date(2028, 7, 4),   # Independence Day
+    date(2028, 9, 4),   # Labor Day
+    date(2028, 11, 23), # Thanksgiving
+    date(2028, 12, 25), # Christmas
+    # 2029
+    date(2029, 1, 1),   # New Year's Day
+    date(2029, 1, 15),  # MLK Day
+    date(2029, 2, 19),  # Presidents' Day
+    date(2029, 3, 30),  # Good Friday
+    date(2029, 5, 28),  # Memorial Day
+    date(2029, 6, 19),  # Juneteenth
+    date(2029, 7, 4),   # Independence Day
+    date(2029, 9, 3),   # Labor Day
+    date(2029, 11, 22), # Thanksgiving
+    date(2029, 12, 25), # Christmas
+    # 2030
+    date(2030, 1, 1),   # New Year's Day
+    date(2030, 1, 21),  # MLK Day
+    date(2030, 2, 18),  # Presidents' Day
+    date(2030, 4, 19),  # Good Friday
+    date(2030, 5, 27),  # Memorial Day
+    date(2030, 6, 19),  # Juneteenth
+    date(2030, 7, 4),   # Independence Day
+    date(2030, 9, 2),   # Labor Day
+    date(2030, 11, 28), # Thanksgiving
+    date(2030, 12, 25), # Christmas
+}
+
+
+def is_trading_day(d: date) -> bool:
+    """Return True if the given date is a US equity trading day."""
+    # Weekend check
+    if d.weekday() >= 5:
+        return False
+    # Holiday check
+    if d in _NYSE_HOLIDAYS:
+        return False
+    return True
+
+
+def trading_days(start: date, end: date) -> list[date]:
+    """Return the list of US equity trading days in [start, end]."""
+    return [d for d in _date_range(start, end) if is_trading_day(d)]
+
+
+# ---------------------------------------------------------------------------
 # Chunking
 # ---------------------------------------------------------------------------
 
@@ -411,9 +524,13 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
     """
     Split a backfill request into one-day × one-symbol-batch chunks.
 
+    Only trading days (weekdays excluding NYSE holidays) are included.
+    Weekends and holidays are skipped automatically — no Databento API
+    calls are made for non-trading days.
+
     Symbols are grouped into batches of chunk_size. Each batch maps to one
-    Databento batch job. For chunk_size=10 with 30 symbols over 5 days this
-    produces 3 batches × 5 days = 15 chunks instead of 150.
+    Databento batch job. For chunk_size=20 with 40 symbols over 5 trading
+    days this produces 2 batches × 5 days = 10 chunks.
 
     chunk_size=1 uses single-symbol chunk IDs (<request>_<date>_<SYM>).
     chunk_size>1 uses batch-index IDs (<request>_<date>_b000, b001, ...).
@@ -423,6 +540,9 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
                for i in range(0, len(symbols), chunk_size)]
     d = start
     while d <= end:
+        if not is_trading_day(d):
+            d += timedelta(days=1)
+            continue
         date_str = d.strftime("%Y.%m.%d")
         for batch_idx, batch_syms in enumerate(batches):
             if chunk_size == 1:
@@ -1311,16 +1431,21 @@ def print_failures(staging_dir: Path, request_id: str | None = None) -> None:
 
 def print_gaps(hdb_dir: Path, symbols: list[str], start: date, end: date,
                schema: str, dataset: str) -> None:
-    """Print a per-symbol gaps report showing missing dates in the HDB.
+    """Print a per-symbol gaps report showing missing trading days in the HDB.
 
-    Compares the requested date range against what's actually in the HDB
-    for each (symbol, schema, exchange) combination.
+    Only trading days (weekdays excluding NYSE holidays) are checked.
+    Weekends and holidays are excluded automatically.
     """
     schema_internal = schema.replace("-", "_")
+    check_dates = trading_days(start, end)
+    if not check_dates:
+        print(f"No trading days in {start}..{end}")
+        return
+
+    skipped = len(list(_date_range(start, end))) - len(check_dates)
 
     # Build q script that checks each date × sym for data presence
-    dates_literal = " ".join(d.strftime("%Y.%m.%d")
-                             for d in _date_range(start, end))
+    dates_literal = " ".join(d.strftime("%Y.%m.%d") for d in check_dates)
     syms_literal = "`" + "`".join(symbols)
 
     q_script = (
@@ -1351,10 +1476,9 @@ def print_gaps(hdb_dir: Path, symbols: list[str], start: date, end: date,
         print(f"Could not generate gaps report: {exc}")
         return
 
-    all_dates = list(_date_range(start, end))
-
     print(f"\n{'='*70}")
     print(f"  Gaps Report — {dataset} {schema} {start}..{end}")
+    print(f"  Trading days: {len(check_dates)}  (skipped {skipped} weekends/holidays)")
     print(f"{'='*70}\n")
     print(f"  {'Symbol':<10} {'Present':>7} {'Missing':>7} {'Coverage':>8}  Missing dates")
     print(f"  {'-'*65}")
@@ -1368,14 +1492,14 @@ def print_gaps(hdb_dir: Path, symbols: list[str], start: date, end: date,
         parts = line.split("|")
         sym = parts[0]
         counts = [int(x) for x in parts[1:] if x]
-        if len(counts) != len(all_dates):
+        if len(counts) != len(check_dates):
             continue
         present = sum(1 for c in counts if c > 0)
-        missing = len(all_dates) - present
-        total_expected += len(all_dates)
+        missing = len(check_dates) - present
+        total_expected += len(check_dates)
         total_present += present
-        pct = f"{100 * present / len(all_dates):.0f}%" if all_dates else "—"
-        missing_dates = [str(d) for d, c in zip(all_dates, counts) if c == 0]
+        pct = f"{100 * present / len(check_dates):.0f}%"
+        missing_dates = [str(d) for d, c in zip(check_dates, counts) if c == 0]
         missing_str = ", ".join(missing_dates[:5])
         if len(missing_dates) > 5:
             missing_str += f" +{len(missing_dates) - 5} more"
