@@ -109,7 +109,7 @@ log = logging.getLogger("orchestrator")
 
 DEFAULT_DATASET = "XNAS.ITCH"
 DEFAULT_SCHEMA = "trades"
-DEFAULT_CHUNK_SIZE = 10
+DEFAULT_CHUNK_SIZE = 20
 
 _HERE = Path(__file__).resolve().parent
 STAGING_DIR = Path(os.environ.get("STAGING_DIR", str(_HERE / "../../staging")))
@@ -144,10 +144,11 @@ def _parse_env_int(name: str, default: int) -> int:
 MAX_COST_USD = _parse_env_float("BACKFILL_MAX_COST_USD", 50.0)
 MAX_RETRIES = _parse_env_int("BACKFILL_MAX_RETRIES", 3)
 
-# Throttle concurrent Databento API calls.  Allows up to 4 in-flight API
+# Throttle concurrent Databento API calls.  Allows up to 10 in-flight API
 # requests at a time (submit, poll, download, estimate) even when the thread
-# pool has 12 workers.  This prevents hammering the Databento API.
-_API_SEMAPHORE = threading.Semaphore(4)
+# pool has 12 workers.  This prevents hammering the Databento API while still
+# allowing good throughput.
+_API_SEMAPHORE = threading.Semaphore(10)
 
 # Job statuses in lifecycle order — chunks in these states are not re-submitted
 TERMINAL_STATUSES = {"loaded", "verified"}

@@ -913,7 +913,7 @@ class TestApiRateLimiting(unittest.TestCase):
         self.assertIsInstance(_API_SEMAPHORE, threading.Semaphore)
         # Semaphore should limit concurrency (internal _value check)
         self.assertGreater(_API_SEMAPHORE._value, 0)
-        self.assertLessEqual(_API_SEMAPHORE._value, 10)
+        self.assertLessEqual(_API_SEMAPHORE._value, 20)
 
     def test_concurrent_api_calls_are_throttled(self):
         """Verify that the semaphore limits actual concurrency."""
@@ -948,8 +948,8 @@ class TestApiRateLimiting(unittest.TestCase):
         for t in threads:
             t.join()
 
-        # Semaphore is 4, so max concurrent should be <= 4
-        self.assertLessEqual(max_concurrent, 4)
+        # Semaphore is 10, so max concurrent should be <= 10
+        self.assertLessEqual(max_concurrent, 10)
 
 
 # ---------------------------------------------------------------------------

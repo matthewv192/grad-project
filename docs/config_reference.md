@@ -37,7 +37,7 @@ other symbol or day.
 
 | Setting | CLI flag | Default | Description |
 |---|---|---|---|
-| Chunk size | `--chunk-size` | `10` | Number of symbols per Databento batch job. Larger values reduce API round-trips; smaller values give finer retry granularity. |
+| Chunk size | `--chunk-size` | `20` | Number of symbols per Databento batch job. Larger values reduce API round-trips; smaller values give finer retry granularity. |
 
 ---
 
