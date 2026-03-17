@@ -1276,6 +1276,129 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
     print()
 
 
+def print_failures(staging_dir: Path, request_id: str | None = None) -> None:
+    """Print a detailed failure breakdown grouped by type, date, and symbol."""
+    store = JobStore(staging_dir)
+    records = store.load_all()
+    if request_id:
+        records = [r for r in records if r.request_id == request_id]
+    failed = [r for r in records if r.status == "failed"]
+
+    if not failed:
+        print("No failed chunks found.")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"  Failure Report — {len(failed)} chunk(s)")
+    print(f"{'='*70}\n")
+
+    # Group by failure type
+    by_type: dict[str, list] = collections.defaultdict(list)
+    for r in failed:
+        by_type[r.failure_type or "unknown"].append(r)
+
+    for ft, recs in sorted(by_type.items()):
+        print(f"  {ft} ({len(recs)} chunk(s)):")
+        for r in sorted(recs, key=lambda x: (x.date, x.chunk_id)):
+            syms = ", ".join(r.symbols[:3])
+            if len(r.symbols) > 3:
+                syms += f" +{len(r.symbols) - 3}"
+            err = r.error_msg[:60] if r.error_msg else ""
+            print(f"    {r.date}  {syms:<20s}  retries={r.retries}  {err}")
+        print()
+
+    print(f"  Tip: run with --retry-failed to requeue these chunks.")
+    print(f"{'='*70}\n")
+
+
+def print_gaps(hdb_dir: Path, symbols: list[str], start: date, end: date,
+               schema: str, dataset: str) -> None:
+    """Print a per-symbol gaps report showing missing dates in the HDB.
+
+    Compares the requested date range against what's actually in the HDB
+    for each (symbol, schema, exchange) combination.
+    """
+    schema_internal = schema.replace("-", "_")
+
+    # Build q script that checks each date × sym for data presence
+    dates_literal = " ".join(d.strftime("%Y.%m.%d")
+                             for d in _date_range(start, end))
+    syms_literal = "`" + "`".join(symbols)
+
+    q_script = (
+        f'hdb:hsym`$"{hdb_dir}";'
+        f'system "l ",1_string hdb;'
+        f'dates:{dates_literal};'
+        f'syms:{syms_literal};'
+        f'schema:`{schema_internal};'
+        f'exch:`$"{dataset}";'
+        f'r:{{[s] present:{{[s;d] '
+        f'  t:select from {schema_internal} where date=d,sym=s,exchange=exch;'
+        f'  count t'
+        f'}}[s;] each dates;'
+        f'-1 (string s),"|",("|" sv string present)'
+        f'}} each syms;\n'
+        f'exit 0\n'
+    )
+
+    try:
+        result = subprocess.run(
+            ["q", "-q"], input=q_script, text=True,
+            capture_output=True, cwd=str(hdb_dir),
+            env={**os.environ, "TZ": "UTC"},
+            timeout=60,
+        )
+    except Exception as exc:
+        log.warning(f"Gaps report failed: {exc}")
+        print(f"Could not generate gaps report: {exc}")
+        return
+
+    all_dates = list(_date_range(start, end))
+
+    print(f"\n{'='*70}")
+    print(f"  Gaps Report — {dataset} {schema} {start}..{end}")
+    print(f"{'='*70}\n")
+    print(f"  {'Symbol':<10} {'Present':>7} {'Missing':>7} {'Coverage':>8}  Missing dates")
+    print(f"  {'-'*65}")
+
+    total_expected = 0
+    total_present = 0
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        parts = line.split("|")
+        sym = parts[0]
+        counts = [int(x) for x in parts[1:] if x]
+        if len(counts) != len(all_dates):
+            continue
+        present = sum(1 for c in counts if c > 0)
+        missing = len(all_dates) - present
+        total_expected += len(all_dates)
+        total_present += present
+        pct = f"{100 * present / len(all_dates):.0f}%" if all_dates else "—"
+        missing_dates = [str(d) for d, c in zip(all_dates, counts) if c == 0]
+        missing_str = ", ".join(missing_dates[:5])
+        if len(missing_dates) > 5:
+            missing_str += f" +{len(missing_dates) - 5} more"
+        print(f"  {sym:<10} {present:>7} {missing:>7} {pct:>8}  {missing_str}")
+
+    print(f"  {'-'*65}")
+    total_pct = f"{100 * total_present / total_expected:.0f}%" if total_expected else "—"
+    print(f"  {'TOTAL':<10} {total_present:>7} {total_expected - total_present:>7} {total_pct:>8}")
+    print(f"{'='*70}\n")
+
+
+def _date_range(start: date, end: date) -> list[date]:
+    """Return a list of dates from start to end inclusive."""
+    result = []
+    d = start
+    while d <= end:
+        result.append(d)
+        d += timedelta(days=1)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -1311,6 +1434,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Skip API calls; run q loader on existing manifests only")
     parser.add_argument("--metrics", action="store_true",
                         help="Print per-chunk timing metrics and exit")
+    parser.add_argument("--failures", action="store_true",
+                        help="Print detailed failure breakdown and exit")
+    parser.add_argument("--gaps", action="store_true",
+                        help="Print per-symbol gaps report for the HDB and exit "
+                             "(requires --symbols, --start, --end)")
     parser.add_argument("--workers", type=int, default=12,
                         help="Maximum parallel chunk workers (default: 12)")
     parser.add_argument("--stype-in", default="raw_symbol",
@@ -1336,6 +1464,22 @@ def main(argv=None) -> None:
     # ---- Metrics mode: no API key needed ----
     if args.metrics:
         print_metrics(STAGING_DIR, request_id=args.request_id)
+        return
+
+    # ---- Failures mode: no API key needed ----
+    if args.failures:
+        print_failures(STAGING_DIR, request_id=args.request_id)
+        return
+
+    # ---- Gaps mode: no API key needed, but requires symbols/start/end ----
+    if args.gaps:
+        if not args.symbols or not args.start or not args.end:
+            log.error("--gaps requires --symbols, --start, and --end")
+            sys.exit(1)
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        hdb_dir = Path(os.environ.get("KDBHDB", str(PACKAGE_HOME / "hdb")))
+        print_gaps(hdb_dir, symbols, date.fromisoformat(args.start),
+                   date.fromisoformat(args.end), args.schema, args.dataset)
         return
 
     # ---- Load-only mode: run q loader on whatever manifests already exist ----

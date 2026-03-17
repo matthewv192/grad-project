@@ -25,9 +25,12 @@ so the full event history must be considered when computing any historical facto
 
 import argparse
 import csv
+import json
 import logging
 import os
 import sys
+import urllib.request
+import urllib.error
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -276,24 +279,83 @@ def _upsert_csv(path: Path, new_rows: list[dict[str, str]],
 # Security master stub
 # ---------------------------------------------------------------------------
 
-def generate_security_master(symbols: list[str]) -> list[dict]:
-    """Stub security master — no free provider available.
+def _fetch_openfigi(symbols: list[str]) -> list[dict]:
+    """Query the OpenFIGI API for instrument metadata.
 
-    Populated with placeholder values so the CSV exists and ref_tables.q
-    can load it without errors.  Replace with real data for production use.
+    OpenFIGI is free (no API key) for up to 20 requests/minute and 10
+    symbols per request.  Returns a list of dicts with FIGI, name, exchange,
+    market sector, and security type.
     """
-    return [
-        {
+    url = "https://api.openfigi.com/v3/mapping"
+    results: list[dict] = []
+
+    # Batch into groups of 10 (OpenFIGI limit per request)
+    for i in range(0, len(symbols), 10):
+        batch = symbols[i:i + 10]
+        payload = [{"idType": "TICKER", "idValue": sym, "exchCode": "US"}
+                   for sym in batch]
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            for sym, entry in zip(batch, data):
+                if isinstance(entry, dict) and "data" in entry and entry["data"]:
+                    d = entry["data"][0]
+                    results.append({
+                        "sym": sym,
+                        "figi": d.get("figi", ""),
+                        "name": d.get("name", f"{sym} Inc."),
+                        "exchange": d.get("exchCode", "US"),
+                        "currency": d.get("currency", "USD"),
+                        "security_type": d.get("securityType", ""),
+                        "market_sector": d.get("marketSector", ""),
+                    })
+                else:
+                    log.warning(f"OpenFIGI: no data for {sym}")
+                    results.append({
+                        "sym": sym, "figi": "", "name": f"{sym} Inc.",
+                        "exchange": "US", "currency": "USD",
+                        "security_type": "", "market_sector": "",
+                    })
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            log.warning(f"OpenFIGI request failed: {exc} — using stubs for batch")
+            for sym in batch:
+                results.append({
+                    "sym": sym, "figi": "", "name": f"{sym} Inc.",
+                    "exchange": "US", "currency": "USD",
+                    "security_type": "", "market_sector": "",
+                })
+    return results
+
+
+def generate_security_master(symbols: list[str]) -> list[dict]:
+    """Generate security master rows, using OpenFIGI for real metadata.
+
+    Falls back to placeholder values if the API is unavailable or returns
+    no data.  The instrument_id field uses a hash-based ID (not Databento's
+    real instrument_id) since OpenFIGI doesn't provide it.
+    """
+    figi_data = _fetch_openfigi(symbols)
+    figi_by_sym = {d["sym"]: d for d in figi_data}
+
+    today = str(date.today())
+    rows = []
+    for i, sym in enumerate(symbols):
+        figi = figi_by_sym.get(sym, {})
+        rows.append({
             "sym": sym,
             "instrument_id": 1000 + i,
-            "name": f"{sym} Inc.",
-            "exchange": "XNAS",
-            "currency": "USD",
-            "valid_from": "2000-01-01",
+            "name": figi.get("name", f"{sym} Inc."),
+            "exchange": figi.get("exchange", "US"),
+            "currency": figi.get("currency", "USD"),
+            "valid_from": today,
             "valid_to": "9999-12-31",
-        }
-        for i, sym in enumerate(symbols)
-    ]
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------

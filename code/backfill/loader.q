@@ -352,6 +352,21 @@ loadChunkBatch:{[manifests]
         :0j
     ];
 
+    // Symbology validation: if ref_symbology_map exists and has rows, check
+    // that every (sym, instrument_id, exchange) in the batch is known.
+    // This is a warning, not a hard failure — the symbology map may not be
+    // populated on the first load (it's built incrementally).
+    if[`ref_symbology_map in key `.;
+      if[count ref_symbology_map;
+        batchPairs:distinct select sym, instrument_id, exchange from raw;
+        mapPairs:select sym, instrument_id, exchange from ref_symbology_map;
+        unknown:batchPairs where not ([] sym:batchPairs`sym; instrument_id:batchPairs`instrument_id; exchange:batchPairs`exchange) in mapPairs;
+        if[count unknown;
+            .lg.o[`loader;"symbology: ",string[count unknown]," unknown (sym,instrument_id,exchange) pair(s) — will be added after load"];
+        ];
+      ];
+    ];
+
     // Sort before quality checks so ordering check reflects write order,
     // not CSV-read order (multi-exchange batches arrive unsorted by design).
     raw:update date:partDate from `sym`time xasc delete date,chunk_id from raw;
