@@ -22,7 +22,7 @@ flowchart LR
 **1. Request Orchestration (Python)**
 ```mermaid
 flowchart TD
-    A[orchestrator.py] --> B[Chunk by day × symbol]
+    A[orchestrator.py] --> B[Chunk by trading day × symbol]
     B --> C[Cost guard < $50]
     C --> D[Fetch from Databento]
     D --> E[Write manifest + job]
@@ -69,7 +69,7 @@ hdb/
 
 | Component | Responsibility |
 |---|---|
-| `orchestrator.py` | Chunk generation, cost guard, Databento API calls (submit/poll/download), manifest writing, job store management, q loader invocation |
+| `orchestrator.py` | Trading calendar filtering, chunk generation, cost guard, Databento API calls (submit/poll/download), manifest writing, job store management (batched writes), q loader invocation |
 | `metrics.py` | Per-chunk timing across pipeline stages; aggregated `summary.json` per request |
 
 ### Staging Directory (Python ↔ q bridge)
@@ -89,7 +89,7 @@ All communication between Python and q goes through files on disk. Python never 
 | Component | Responsibility |
 |---|---|
 | `manifest.q` | Scan manifest dir, validate each manifest, check job store for skip/retry |
-| `loader.q` | Parse CSVs, merge multi-exchange partitions, write HDB via `.Q.dpft`, update job records and metrics |
+| `loader.q` | Parse CSVs, validate symbology against `ref_symbology_map`, merge multi-exchange partitions, write HDB via `.Q.dpft`, verify partition row counts post-write, update job records and metrics |
 | `quality.q` | Duplicate detection (exchange-aware), time ordering, null checking |
 
 ### kdb+ HDB

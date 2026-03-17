@@ -79,17 +79,21 @@ All commands use `bin/backfill`, which handles environment setup automatically.
 | `--end` | _(required)_ | End date, inclusive (YYYY-MM-DD) |
 | `--schema` | `trades` | `trades` or `ohlcv-1m` |
 | `--dataset` | `XNAS.ITCH` | Databento dataset identifier |
-| `--chunk-size` | `10` | Symbols per Databento batch job |
+| `--chunk-size` | `20` | Symbols per Databento batch job |
 | `--workers` | `12` | Parallel chunk workers |
 | `--dry-run` | off | Print cost estimate only; no API calls |
 | `--download-only` | off | Download and stage CSVs; skip the q loader |
 | `--load-only` | off | Skip API calls; run the q loader on existing staged manifests |
 | `--metrics` | off | Print per-chunk timing metrics and exit |
+| `--failures` | off | Print detailed failure breakdown grouped by error type |
+| `--gaps` | off | Per-symbol report of missing trading days in HDB (requires `--symbols`, `--start`, `--end`) |
 
 `bin/backfill` sources `setenv.sh` and activates the venv automatically. It
-submits one Databento job per symbol per day, running up to 12 in parallel.
-A live progress line updates in the terminal as chunks complete, followed by
-a summary table of rows loaded per exchange on success.
+submits one Databento job per symbol-batch per trading day, running up to 12
+in parallel. Weekends and NYSE holidays are skipped automatically — no API
+calls are made for non-trading days. A live progress line updates in the
+terminal as chunks complete, followed by a summary table of rows loaded per
+exchange on success.
 
 ### Pre-flight HDB check
 

@@ -51,11 +51,11 @@ Single source of truth for every table. All q scripts load this first — centra
 
 ### 3.3 `orchestrator.py`
 
-**Chunking:** Split into chunks of `chunk_size` symbols × 1 day (default: 10). 50 symbols × 30 days = 150 chunks. Each maps to one Databento batch job — a failure only affects that day/batch.
+**Chunking:** Split into chunks of `chunk_size` symbols × 1 trading day (default: 20). Weekends and NYSE holidays (2015–2030) are skipped automatically — no API calls for non-trading days. 50 symbols × 20 trading days in a month ≈ 50 chunks. Each maps to one Databento batch job — a failure only affects that day/batch. The trading calendar is pluggable per dataset prefix via `_EXCHANGE_CALENDARS`.
 
 **Job store:** Every chunk has a `JobRecord` in a kdb binary table at `staging/metadata/backfill_jobs`, tracking `pending → submitted → running → downloaded → loaded → verified`. State is written before each action so a crash leaves a recoverable record. Managed by `KdbJobStore` via a q subprocess running `jobstore.q`.
 
-**Per-chunk pipeline:** cost estimate → submit → poll → download → SHA-256 checksum → write manifest → mark loaded. Chunks already in `loaded` or `verified` status are skipped without re-querying Databento.
+**Per-chunk pipeline:** cost estimate → submit → poll → download → SHA-256 checksum → write manifest → mark loaded. Non-trading days (weekends/holidays) are filtered before chunking. Chunks already in `loaded` or `verified` status are skipped without re-querying Databento.
 
 **Parallelism:** 12 workers run the download phase concurrently (`ThreadPoolExecutor`). The q loader is invoked once after all downloads complete — concurrent `.Q.dpft` calls on the same partition would corrupt the HDB. `fcntl.flock` enforces this across processes.
 
@@ -71,10 +71,12 @@ Key steps in `loadChunkBatch`:
 
 1. **Idempotency** — check if this exchange already exists in the partition by reading only the `exchange` column file on disk
 2. **Row count validation** — parsed rows must match the manifest's declared count
-3. **Quality checks** — duplicates, time ordering, nulls. Bad data rejected before touching the HDB
-4. **Partition merge** — when adding a second exchange to an existing date, read the existing partition, reverse `.Q.dpft`'s symbol enumeration via `unenumAll`, concatenate, re-write
-5. **Write lock** — atomic `mkdir`-based POSIX lock prevents concurrent writes
-6. **`.Q.dpft`** — writes the splayed partition with `p#` on `sym`, then `g#` on `exchange`
+3. **Symbology validation** — each `(sym, instrument_id, exchange)` tuple is checked against `ref_symbology_map`; unknown pairs are logged as warnings
+4. **Quality checks** — duplicates, time ordering, nulls. Bad data rejected before touching the HDB
+5. **Partition merge** — when adding a second exchange to an existing date, read the existing partition, reverse `.Q.dpft`'s symbol enumeration via `unenumAll`, concatenate, re-write
+6. **Write lock** — atomic `mkdir`-based POSIX lock prevents concurrent writes
+7. **`.Q.dpft`** — writes the splayed partition with `p#` on `sym`, then `g#` on `exchange`
+8. **Post-write verification** — reads the partition back from disk and verifies the row count matches the expected count; mismatches abort with a `post-write verification` error
 
 ### 3.6 `quality.q`
 
@@ -82,7 +84,7 @@ Three checks before every write: duplicate natural keys, time ordering, nulls in
 
 ### 3.7 Reference Data & Adjustments
 
-`ref_ingest.py` fetches corporate actions and dividends via yfinance and computes cumulative adjustment factors. Reference tables are append-only with a `loaded_at` timestamp on every row. `adjlib.q` exposes `getAdjustedClose` with `backward`/`forward` methods and an `asOf` parameter for point-in-time factor selection — factors ingested after a given date are excluded, preventing look-ahead bias in backtesting.
+`ref_ingest.py` fetches corporate actions and dividends via yfinance, instrument metadata from the OpenFIGI API (free, no key), and computes cumulative adjustment factors. Reference tables are append-only with a `loaded_at` timestamp on every row. `adjlib.q` exposes `getAdjustedClose` with `backward`/`forward` methods and an `asOf` parameter for point-in-time factor selection — factors ingested after a given date are excluded, preventing look-ahead bias in backtesting.
 
 ### 3.8 Tests
 

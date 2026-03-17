@@ -405,8 +405,20 @@ JobStore = KdbJobStore
 # US equity trading calendar
 # ---------------------------------------------------------------------------
 
-# NYSE observed holidays.  All US equity exchanges (XNAS, XNYS, IEXG, EQUS)
-# follow this calendar.  Holidays are listed through 2030.  Extend as needed.
+# ---------------------------------------------------------------------------
+# Exchange calendars — pluggable per dataset prefix.
+#
+# To add a new exchange region:
+#   1. Define its holiday set (e.g. _LSE_HOLIDAYS for London)
+#   2. Add entries to _EXCHANGE_CALENDARS mapping dataset prefixes to the set
+#
+# Datasets not in the map fall through to _NYSE_HOLIDAYS (US default).
+# European examples (not yet populated):
+#   _LSE_HOLIDAYS:  set[date] = { ... }   # London Stock Exchange
+#   _XETR_HOLIDAYS: set[date] = { ... }   # Deutsche Börse / XETRA
+#   _XPAR_HOLIDAYS: set[date] = { ... }   # Euronext Paris
+# ---------------------------------------------------------------------------
+
 _NYSE_HOLIDAYS: set[date] = {
     # 2015
     date(2015, 1, 1),   # New Year's Day
@@ -579,20 +591,43 @@ _NYSE_HOLIDAYS: set[date] = {
 }
 
 
-def is_trading_day(d: date) -> bool:
-    """Return True if the given date is a US equity trading day."""
-    # Weekend check
+# Map Databento dataset prefixes to their holiday calendars.
+# All current US equity datasets share the NYSE calendar.
+# Add entries here for non-US exchanges (e.g. "XLSE": _LSE_HOLIDAYS).
+_EXCHANGE_CALENDARS: dict[str, set[date]] = {
+    "XNAS": _NYSE_HOLIDAYS,    # NASDAQ
+    "XNYS": _NYSE_HOLIDAYS,    # NYSE
+    "IEXG": _NYSE_HOLIDAYS,    # IEX
+    "EQUS": _NYSE_HOLIDAYS,    # Equity US Mini
+    "XBOS": _NYSE_HOLIDAYS,    # NASDAQ BX
+    "XPSX": _NYSE_HOLIDAYS,    # NASDAQ PSX
+    "ARCX": _NYSE_HOLIDAYS,    # NYSE Arca
+    "BATS": _NYSE_HOLIDAYS,    # Cboe BZX
+    "EDGA": _NYSE_HOLIDAYS,    # Cboe EDGA
+    "EDGX": _NYSE_HOLIDAYS,    # Cboe EDGX
+}
+
+
+def _get_holidays(dataset: str) -> set[date]:
+    """Return the holiday set for a dataset, falling back to NYSE."""
+    prefix = dataset.split(".")[0] if "." in dataset else dataset
+    return _EXCHANGE_CALENDARS.get(prefix, _NYSE_HOLIDAYS)
+
+
+def is_trading_day(d: date, dataset: str = "XNAS.ITCH") -> bool:
+    """Return True if the given date is a trading day for the dataset's exchange."""
     if d.weekday() >= 5:
         return False
-    # Holiday check
-    if d in _NYSE_HOLIDAYS:
+    if d in _get_holidays(dataset):
         return False
     return True
 
 
-def trading_days(start: date, end: date) -> list[date]:
-    """Return the list of US equity trading days in [start, end]."""
-    return [d for d in _date_range(start, end) if is_trading_day(d)]
+def trading_days(start: date, end: date, dataset: str = "XNAS.ITCH") -> list[date]:
+    """Return the list of trading days in [start, end] for the given dataset."""
+    holidays = _get_holidays(dataset)
+    return [d for d in _date_range(start, end)
+            if d.weekday() < 5 and d not in holidays]
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +656,7 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
                for i in range(0, len(symbols), chunk_size)]
     d = start
     while d <= end:
-        if not is_trading_day(d):
+        if not is_trading_day(d, dataset):
             d += timedelta(days=1)
             continue
         date_str = d.strftime("%Y.%m.%d")
@@ -1518,7 +1553,7 @@ def print_gaps(hdb_dir: Path, symbols: list[str], start: date, end: date,
     Weekends and holidays are excluded automatically.
     """
     schema_internal = schema.replace("-", "_")
-    check_dates = trading_days(start, end)
+    check_dates = trading_days(start, end, dataset)
     if not check_dates:
         print(f"No trading days in {start}..{end}")
         return

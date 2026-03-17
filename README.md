@@ -184,12 +184,16 @@ grad-project/
 
 ## Key Capabilities
 
+- **Trading calendar** — Weekends and NYSE holidays (2015–2030) are skipped at chunk-generation time. No API calls are made for non-trading days. Calendar is pluggable per dataset prefix for future non-US exchange support.
 - **Multi-exchange partitions** — XNAS.ITCH, XNYS.PILLAR, IEXG.TOPS, EQUS.MINI (and others) can coexist in the same HDB partition date. Each row carries an `exchange` column.
 - **Idempotent loads** — Re-running the same request skips already-verified chunks. Supplying a duplicate `--request-id` with different parameters aborts with a clear error.
-- **Job store** — Every chunk tracks status (`pending` → `downloaded` → `loaded` → `verified`) in a kdb binary table at `staging/metadata/backfill_jobs`.
+- **Job store** — Every chunk tracks status (`pending` → `downloaded` → `loaded` → `verified`) in a kdb binary table at `staging/metadata/backfill_jobs`. Writes are batched in memory and flushed periodically for performance.
 - **Cost safeguard** — `BACKFILL_MAX_COST_USD` (default $50) blocks over-budget requests before API submission. Unexpected cost-estimation failures abort the run rather than silently disabling the guard.
-- **Quality checks** — Duplicate detection (exchange-aware), ordering validation, and null checking on every loaded chunk. Missing schema columns are logged as errors.
-- **Symbology map** — `staging/reference/symbology_map.csv` accumulates `(sym, instrument_id, exchange)` pairs across all loads, written once per run.
+- **Quality checks** — Duplicate detection (exchange-aware), ordering validation, null checking, symbology validation against `ref_symbology_map`, and post-write partition row count verification on every loaded chunk.
+- **OpenFIGI security master** — Real instrument metadata (name, exchange, FIGI) fetched from the free OpenFIGI API. Falls back to stubs for uncovered symbols.
+- **Gaps report** — `--gaps` shows per-symbol coverage of trading days in the HDB, with missing dates listed.
+- **Failure diagnostics** — `--failures` shows a detailed breakdown of failed chunks grouped by error type.
+- **Symbology map** — `staging/reference/symbology_map.csv` accumulates `(sym, instrument_id, exchange)` pairs across all loads, validated during each load.
 - **UTC enforcement** — The q loader subprocess always runs with `TZ=UTC` set, preventing timestamp corruption on non-UTC hosts.
 - **Metrics continuity** — A stub metrics record is written at chunk start, so a mid-run crash never leaves a gap in `staging/metrics/`.
 

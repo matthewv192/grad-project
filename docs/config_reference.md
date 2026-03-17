@@ -108,6 +108,8 @@ Redirect stdout to `logs/` if you also want console output captured:
 | `--download-only` | No | Download and stage only; do not invoke the q loader |
 | `--load-only` | No | Skip API calls; run the q loader on existing staged manifests. Does not filter by request ID — processes all pending manifests in the staging directory. |
 | `--metrics` | No | Print per-chunk timing metrics and exit |
+| `--failures` | No | Print detailed failure breakdown grouped by error type |
+| `--gaps` | No | Per-symbol report of missing trading days in HDB. Requires `--symbols`, `--start`, `--end`. Only checks trading days (weekends/NYSE holidays excluded). |
 | `--stype-in` | No | Databento symbol type passed to submit/cost API calls (default: `raw_symbol`). Use `continuous` for continuous futures contracts or `instrument_id` for numeric IDs. |
 
 ---

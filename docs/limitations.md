@@ -10,11 +10,11 @@ The following components are implemented but use synthetic data. They must be re
 
 | Component | Current State | What to Replace |
 |---|---|---|
-| `ref_ingest.py` | Fetches real corp actions and dividends via yfinance; called automatically after each backfill. Security master is still a stub (no free provider) — populated with placeholders. `--synthetic` flag available for CI/offline use. | Replace security master with a real provider (Bloomberg, Refinitiv, etc.) |
+| `ref_ingest.py` | Fetches real corp actions and dividends via yfinance; instrument metadata from OpenFIGI API (free, no key). Called automatically after each backfill. `--synthetic` flag available for CI/offline use. | OpenFIGI coverage is US-focused; for non-US securities or deeper metadata (CUSIP, SEDOL, sector), a commercial provider (Bloomberg, Refinitiv) is needed. |
 | `ref_tables.q` | Reads from CSV files; no live feed | Sufficient for batch backfill; add a real-time source for production |
 | `adjlib.q` | `backward` and `forward` adjustment methods with point-in-time `asOf` filtering; factors sourced from yfinance via `ref_ingest.py` | yfinance coverage may be incomplete for older history or non-US securities |
 
-> **Important:** `ref_ingest.py` assigns `instrument_id` values starting at 1000 for its stub security master entries. Real Databento instrument IDs are exchange-assigned integers that differ. Using the stub security master alongside real backfill output will cause `resolveSymbol` / `resolveInstrumentId` lookups to return null for all real instruments.
+> **Note:** `ref_ingest.py` fetches real instrument metadata from OpenFIGI where available. For symbols not covered by OpenFIGI, synthetic `instrument_id` values (1000+) are assigned. These do not match Databento's exchange-assigned instrument IDs, so `resolveSymbol` / `resolveInstrumentId` lookups may return null for uncovered instruments. The adjustment library is unaffected — it joins on `sym`, not `instrument_id`.
 
 ---
 
