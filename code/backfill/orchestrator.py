@@ -408,6 +408,87 @@ JobStore = KdbJobStore
 # NYSE observed holidays.  All US equity exchanges (XNAS, XNYS, IEXG, EQUS)
 # follow this calendar.  Holidays are listed through 2030.  Extend as needed.
 _NYSE_HOLIDAYS: set[date] = {
+    # 2015
+    date(2015, 1, 1),   # New Year's Day
+    date(2015, 1, 19),  # MLK Day
+    date(2015, 2, 16),  # Presidents' Day
+    date(2015, 4, 3),   # Good Friday
+    date(2015, 5, 25),  # Memorial Day
+    date(2015, 7, 3),   # Independence Day (observed)
+    date(2015, 9, 7),   # Labor Day
+    date(2015, 11, 26), # Thanksgiving
+    date(2015, 12, 25), # Christmas
+    # 2016
+    date(2016, 1, 1),   # New Year's Day
+    date(2016, 1, 18),  # MLK Day
+    date(2016, 2, 15),  # Presidents' Day
+    date(2016, 3, 25),  # Good Friday
+    date(2016, 5, 30),  # Memorial Day
+    date(2016, 7, 4),   # Independence Day
+    date(2016, 9, 5),   # Labor Day
+    date(2016, 11, 24), # Thanksgiving
+    date(2016, 12, 26), # Christmas (observed)
+    # 2017
+    date(2017, 1, 2),   # New Year's Day (observed)
+    date(2017, 1, 16),  # MLK Day
+    date(2017, 2, 20),  # Presidents' Day
+    date(2017, 4, 14),  # Good Friday
+    date(2017, 5, 29),  # Memorial Day
+    date(2017, 7, 4),   # Independence Day
+    date(2017, 9, 4),   # Labor Day
+    date(2017, 11, 23), # Thanksgiving
+    date(2017, 12, 25), # Christmas
+    # 2018
+    date(2018, 1, 1),   # New Year's Day
+    date(2018, 1, 15),  # MLK Day
+    date(2018, 2, 19),  # Presidents' Day
+    date(2018, 3, 30),  # Good Friday
+    date(2018, 5, 28),  # Memorial Day
+    date(2018, 7, 4),   # Independence Day
+    date(2018, 9, 3),   # Labor Day
+    date(2018, 11, 22), # Thanksgiving
+    date(2018, 12, 5),  # National Day of Mourning (George H.W. Bush)
+    date(2018, 12, 25), # Christmas
+    # 2019
+    date(2019, 1, 1),   # New Year's Day
+    date(2019, 1, 21),  # MLK Day
+    date(2019, 2, 18),  # Presidents' Day
+    date(2019, 4, 19),  # Good Friday
+    date(2019, 5, 27),  # Memorial Day
+    date(2019, 7, 4),   # Independence Day
+    date(2019, 9, 2),   # Labor Day
+    date(2019, 11, 28), # Thanksgiving
+    date(2019, 12, 25), # Christmas
+    # 2020
+    date(2020, 1, 1),   # New Year's Day
+    date(2020, 1, 20),  # MLK Day
+    date(2020, 2, 17),  # Presidents' Day
+    date(2020, 4, 10),  # Good Friday
+    date(2020, 5, 25),  # Memorial Day
+    date(2020, 7, 3),   # Independence Day (observed)
+    date(2020, 9, 7),   # Labor Day
+    date(2020, 11, 26), # Thanksgiving
+    date(2020, 12, 25), # Christmas
+    # 2021
+    date(2021, 1, 1),   # New Year's Day
+    date(2021, 1, 18),  # MLK Day
+    date(2021, 2, 15),  # Presidents' Day
+    date(2021, 4, 2),   # Good Friday
+    date(2021, 5, 31),  # Memorial Day
+    date(2021, 7, 5),   # Independence Day (observed)
+    date(2021, 9, 6),   # Labor Day
+    date(2021, 11, 25), # Thanksgiving
+    date(2021, 12, 24), # Christmas (observed)
+    # 2022
+    date(2022, 1, 17),  # MLK Day
+    date(2022, 2, 21),  # Presidents' Day
+    date(2022, 4, 15),  # Good Friday
+    date(2022, 5, 30),  # Memorial Day
+    date(2022, 6, 20),  # Juneteenth (observed, first year)
+    date(2022, 7, 4),   # Independence Day
+    date(2022, 9, 5),   # Labor Day
+    date(2022, 11, 24), # Thanksgiving
+    date(2022, 12, 26), # Christmas (observed)
     # 2023
     date(2023, 1, 2),   # New Year's Day (observed)
     date(2023, 1, 16),  # MLK Day
