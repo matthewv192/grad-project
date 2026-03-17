@@ -43,7 +43,7 @@ Python handles HTTP, JSON, and orchestration. q handles columnar parsing and par
 
 ### 3.1 `setenv.sh`
 
-Sets all environment variables (`TORQHOME`, `KDBHDB`, `STAGING_DIR`, `DATABENTO_API_KEY`) for both Python and q processes. Uses `${BASH_SOURCE[0]}` so it resolves correctly whether sourced interactively or from a script. `bin/backfill` sources it automatically — manual sourcing is only needed for interactive q sessions.
+Sets all environment variables (`PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, `DATABENTO_API_KEY`) for both Python and q processes. Uses `${BASH_SOURCE[0]}` so it resolves correctly whether sourced interactively or from a script. If TorQ is present alongside, `TORQHOME` is set automatically. `bin/backfill` sources it on every run — manual sourcing is only needed for interactive q sessions.
 
 ### 3.2 `schema/schema.q`
 

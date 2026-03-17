@@ -731,7 +731,7 @@ def run_q_loader(package_home: Path, manifest_dir: Path,
                  request_id: str | None = None) -> None:
     hdb_dir = os.environ.get("KDBHDB", str(package_home / "hdb"))
     loader_script = package_home / "code" / "backfill" / "loader.q"
-    torq_home = os.environ.get("TORQHOME", str(package_home / "../TorQ"))
+    torq_home = os.environ.get("TORQHOME", "")
 
     if not loader_script.exists():
         raise FileNotFoundError(f"Loader script not found: {loader_script}")
@@ -862,8 +862,9 @@ def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
            "STAGING_DIR": str(manifest_dir.parent.parent),
            "JOBS_FILE": str(jobs_file.resolve()),
            "KDBHDB": hdb_dir,
-           "TORQHOME": torq_home,
            "TZ": "UTC"}
+    if torq_home:
+        env["TORQHOME"] = torq_home
     # Pass REQUEST_ID so manifest.q can filter to only this run's manifests,
     # preventing cross-contamination when parallel backfill runs share the
     # staging/metadata/manifests/ directory.

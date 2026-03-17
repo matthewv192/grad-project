@@ -9,7 +9,8 @@ A complete guide to running the TorQ Databento backfill pipeline from scratch.
 - **kdb-x 5.0** — installed and on `PATH` (check: `q -q <<< "exit 0"`)
 - **Python 3.10+** with `pip`
 - **A Databento API key** with Historical API access
-- **TorQ** cloned alongside this project (see layout below)
+
+> **TorQ is optional.** The package follows TorQ directory conventions but runs standalone. If TorQ is cloned alongside (`~/TorQ/`), `setenv.sh` detects it automatically.
 
 ---
 
@@ -17,7 +18,6 @@ A complete guide to running the TorQ Databento backfill pipeline from scratch.
 
 ```
 ~/                          ← (or any common parent)
-├── TorQ/                   ← read-only AquaQ TorQ framework
 ├── grad-project/           ← this package
 └── venv/                   ← Python virtual environment (created below)
 ```
@@ -26,13 +26,7 @@ A complete guide to running the TorQ Databento backfill pipeline from scratch.
 
 ## Initial Setup (one-time)
 
-### 1. Clone TorQ
-
-```bash
-git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ
-```
-
-### 2. Install Python dependencies
+### 1. Install Python dependencies
 
 ```bash
 cd ~/grad-project
@@ -41,7 +35,7 @@ source ../venv/bin/activate
 pip install -e .
 ```
 
-### 3. Verify the environment
+### 2. Verify the environment
 
 ```bash
 source setenv.sh
@@ -50,14 +44,15 @@ source setenv.sh
 Expected output:
 
 ```
-TORQHOME    = /home/<user>/TorQ
 PACKAGEHOME = /home/<user>/grad-project
 KDBHDB      = /home/<user>/grad-project/hdb
+TORQHOME    = (not set — TorQ not found, running standalone)
 ```
 
-`setenv.sh` sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and the
-Databento API key. The `bin/backfill` entrypoint sources it automatically on
-every run, so you only need to source it manually for interactive q sessions.
+`setenv.sh` sets `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and the
+Databento API key. If TorQ is present alongside the package, `TORQHOME`
+is set automatically. The `bin/backfill` entrypoint sources `setenv.sh`
+on every run, so you only need to source it manually for interactive q sessions.
 
 ---
 

@@ -6,24 +6,21 @@
 |---|---|---|
 | kdb+ / kdb-x | 5.0 | Must be on `PATH` as `q` |
 | Python | ≥ 3.10 | |
-| TorQ | latest main | Cloned alongside this package (see layout below) |
 | Databento account | — | API key required for real data |
+
+> **TorQ is optional.** This package follows TorQ directory conventions but runs standalone. If you want TorQ integration, clone it alongside: `git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ`
 
 ---
 
-## 1. Clone and position the repos
-
-Both repos must sit side-by-side under the same parent directory:
+## 1. Clone the repo
 
 ```bash
-git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ
 git clone <this-repo> ~/grad-project
 ```
 
 Expected layout:
 ```
 ~/
-├── TorQ/
 ├── grad-project/
 └── venv/          ← created in step 2
 ```
@@ -77,12 +74,12 @@ source setenv.sh
 
 Expected output:
 ```
-TORQHOME    = /home/<user>/TorQ
 PACKAGEHOME = /home/<user>/grad-project
 KDBHDB      = /home/<user>/grad-project/hdb
+TORQHOME    = (not set — TorQ not found, running standalone)
 ```
 
-`setenv.sh` sets `TORQHOME`, `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and the Databento API key. The `bin/backfill` entrypoint sources it automatically — manual sourcing is only needed for interactive q sessions.
+`setenv.sh` sets `PACKAGEHOME`, `KDBHDB`, `STAGING_DIR`, and the Databento API key. If TorQ is cloned alongside, `TORQHOME` is set automatically. The `bin/backfill` entrypoint sources it on every run — manual sourcing is only needed for interactive q sessions.
 
 ---
 

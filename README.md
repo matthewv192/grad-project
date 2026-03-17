@@ -10,10 +10,9 @@ a kdb+ HDB. Supports multiple exchanges in the same HDB partition.
 
 ## Quick Start
 
-**Step 1 — Clone repos side-by-side:**
+**Step 1 — Clone:**
 
 ```bash
-git clone https://github.com/AquaQAnalytics/TorQ.git ~/TorQ
 git clone <this-repo> ~/grad-project
 ```
 
@@ -107,6 +106,12 @@ NOTE: 2 chunk(s) already in HDB — skipping (saves API cost):
 
 All requested chunks already in HDB. Nothing to do.
 ```
+
+---
+
+## TorQ Compatibility
+
+This package follows [TorQ](https://github.com/AquaQAnalytics/TorQ) directory conventions (`setenv.sh`, `config/process.csv`, `KDBAPPCONFIG`/`KDBAPPCODE` env vars) so it can be plugged into a TorQ deployment. However, **TorQ is not required** — the pipeline runs standalone. If TorQ is cloned alongside this package, `setenv.sh` detects it and sets `TORQHOME` automatically.
 
 ---
 
