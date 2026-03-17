@@ -750,7 +750,6 @@ def run_q_loader(package_home: Path, manifest_dir: Path,
                  request_id: str | None = None) -> None:
     hdb_dir = os.environ.get("KDBHDB", str(package_home / "hdb"))
     loader_script = package_home / "code" / "backfill" / "loader.q"
-    torq_home = os.environ.get("TORQHOME", "")
 
     if not loader_script.exists():
         raise FileNotFoundError(f"Loader script not found: {loader_script}")
@@ -768,7 +767,7 @@ def run_q_loader(package_home: Path, manifest_dir: Path,
         try:
             _acquire_lock_with_timeout(lock_fh, timeout_s=300)
             try:
-                _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home,
+                _run_q_loader_locked(package_home, manifest_dir, hdb_dir,
                                      request_id=request_id)
             finally:
                 fcntl.flock(lock_fh, fcntl.LOCK_UN)
@@ -870,7 +869,7 @@ def _run_ref_ingest(symbols: list[str], start: date, end: date) -> None:
 
 
 def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
-                         hdb_dir: str, torq_home: str,
+                         hdb_dir: str,
                          request_id: str | None = None) -> None:
     # Pipe q commands via stdin so we can load the script then call runLoader[].
     # cwd=package_home ensures relative \l paths inside loader.q resolve correctly.
@@ -882,8 +881,6 @@ def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
            "JOBS_FILE": str(jobs_file.resolve()),
            "KDBHDB": hdb_dir,
            "TZ": "UTC"}
-    if torq_home:
-        env["TORQHOME"] = torq_home
     # Pass REQUEST_ID so manifest.q can filter to only this run's manifests,
     # preventing cross-contamination when parallel backfill runs share the
     # staging/metadata/manifests/ directory.

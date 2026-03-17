@@ -13,14 +13,7 @@
 // Run standalone (invoked via stdin piping from orchestrator.py):
 //   echo "runLoader[];exit 0" | q code/backfill/loader.q
 
-// Bootstrap TorQ logging if available, otherwise define a plain fallback.
-// This lets loader.q work both inside a TorQ process and as a standalone script.
-$[`TORQHOME in key .z.e;
-    @[{system "l ",getenv[`TORQHOME],"/code/common/utils.q"};::;::];
-    ::
- ];
-
-// Fallback logger used when TorQ is not available
+// Logger: define a plain fallback if TorQ's .lg namespace isn't already loaded.
 if[not `lg in key `.;
     .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}
  ];
@@ -30,7 +23,6 @@ if[not `lg in key `.;
 \l code/backfill/quality.q
 
 // HDB root — set by setenv.sh → KDBHDB, defaulting to ./hdb relative to cwd.
-// Use getenv directly: setenv updates the process env but NOT .z.e (startup snapshot).
 HDB_DIR:hsym`$$[count s:getenv`KDBHDB;s;"hdb"];
 
 // ---------------------------------------------------------------------------
