@@ -408,12 +408,24 @@ loadChunkBatch:{[manifests]
     timePath:` sv partDateDir,schema,`time;
     times:@[get;timePath;{[e] ()}];
 
+    // Post-write verification: read back the partition row count from disk
+    // and compare to the expected count.  A partial write from a disk error
+    // or filesystem issue would be caught here rather than silently verified.
+    diskCount:@[{count get x};` sv partDateDir,schema;{[e] 0Nj}];
+    expectedCount:count merged;
+    verifyOk:$[null diskCount; 0b; diskCount=expectedCount];
+    if[not verifyOk;
+        .lg.e[`loader;"POST-WRITE VERIFICATION FAILED: expected ",string[expectedCount]," rows on disk, got ",string diskCount];
+        {[m;msg] updateJobRecord[m`chunk_id;`failed;"post-write verification: ",msg]}[;$[null diskCount;"could not read partition";"row count mismatch: expected ",string[expectedCount]," got ",string diskCount]] each validPending;
+        :0j
+    ];
+
     {[m;schema;partDate;loadNs;times;nValid;raw]
         chunkId:m`chunk_id;
         requestId:m`request_id;
         rowCount:m`row_count;
         dataset:m`exchange;
-        
+
         updateJobRecord[chunkId; `loaded; ""];
         updateJobRecord[chunkId; `verified; ""];
         

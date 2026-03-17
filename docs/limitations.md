@@ -25,8 +25,8 @@ When Databento returns a zero-row CSV (e.g. a public holiday, trading halt, or n
 
 The chunk is still marked `verified` in the job store, so `--status` will show it as successful. There is no distinct status for "completed but empty" — a clean status display does not guarantee data exists in the HDB for that date.
 
-### No post-write row count verification
-Python counts rows in the downloaded CSV and stores that count in the manifest. The q loader checks that the parsed row count matches the manifest before writing. However, after `.Q.dpft` writes the partition to disk, the actual row count on disk is never re-verified. A partial write caused by a filesystem error during `.Q.dpft` would not be detected and the chunk would still be marked `verified`.
+### Post-write row count verification
+After `.Q.dpft` writes the partition, the loader reads the partition back from disk and verifies the row count matches the expected count. If the counts differ (e.g. partial write from a disk error), the chunk is marked `failed` with a `post-write verification` error instead of `verified`. This catches filesystem-level write failures that `.Q.dpft` itself does not report.
 
 ### Quality checks run on in-memory data only
 `runQualityChecks` in `quality.q` checks the freshly-read data before it is written to disk. Empty placeholder rows added by `.Q.chk` are not quality-checked.
