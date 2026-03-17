@@ -20,7 +20,7 @@ REF_DIR:hsym`$$[count s:getenv`STAGING_DIR;s;"staging"],"/reference";
 // ---------------------------------------------------------------------------
 loadRefTable:{[tableSymbol;filename;typeStr]
     p:` sv REF_DIR,`$filename;
-    if[not p in key p;
+    if[not count key p;
         .lg.o[`ref;filename," not found — run ref_ingest.py first"];
         :0
     ];
@@ -39,7 +39,7 @@ loadRefAdjFactors:{[]     loadRefTable[`ref_adj_factors;"adj_factors.csv";"SDFFF
 // ---------------------------------------------------------------------------
 loadSymbologyMap:{[]
     p:` sv REF_DIR,`symbology_map.csv;
-    if[not p in key p;
+    if[not count key p;
         .lg.o[`ref;"symbology_map.csv not found — run backfill first to populate"];
         :0
     ];

@@ -10,6 +10,7 @@ Call write_summary() after all chunks in a request complete to emit
 """
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field, asdict
@@ -105,8 +106,10 @@ def load_chunk_metrics(staging_dir: Path, request_id: str) -> list[dict]:
         try:
             with open(p) as f:
                 result.append(json.load(f))
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger("metrics").warning(
+                f"Skipping corrupt chunk metrics file {p.name}: {exc}"
+            )
     return result
 
 

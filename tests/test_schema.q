@@ -61,7 +61,7 @@ assertEq["ref_security_master cols";
 
 assertEq["ref_corp_actions cols";
     cols ref_corp_actions;
-    `sym`action_type`ex_date`record_date`effective_date`factor`description];
+    `sym`action_type`ex_date`record_date`effective_date`factor`description`loaded_at];
 
 assertEq["ref_adj_factors cols";
     cols ref_adj_factors;

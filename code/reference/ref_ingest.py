@@ -211,14 +211,14 @@ def compute_adj_factors(symbols: list[str], corp_actions: list[dict],
 # CSV helpers
 # ---------------------------------------------------------------------------
 
-def _read_csv(path: Path) -> list[dict]:
+def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
+def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +233,7 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     log.info(f"Wrote {len(rows)} rows to {path}")
 
 
-def _append_csv(path: Path, rows: list[dict]) -> None:
+def _append_csv(path: Path, rows: list[dict[str, str]]) -> None:
     """Append rows to an existing CSV, preserving all prior rows.
 
     Used for adj_factors.csv so that each ingestion batch adds a new revision
@@ -247,7 +247,8 @@ def _append_csv(path: Path, rows: list[dict]) -> None:
     log.info(f"Appended {len(rows)} rows to {path} (total: {len(existing) + len(rows)})")
 
 
-def _upsert_csv(path: Path, new_rows: list[dict], key_cols: list[str]) -> None:
+def _upsert_csv(path: Path, new_rows: list[dict[str, str]],
+                 key_cols: list[str]) -> None:
     """Merge new_rows into the CSV at path, upserting by key_cols.
 
     Existing rows whose key matches a new row are replaced.
@@ -259,10 +260,10 @@ def _upsert_csv(path: Path, new_rows: list[dict], key_cols: list[str]) -> None:
     existing = _read_csv(path)
     index: dict[tuple, int] = {}
     for i, row in enumerate(existing):
-        key = tuple(row[k] for k in key_cols)
+        key = tuple(row.get(k, "") for k in key_cols)
         index[key] = i
     for row in new_rows:
-        key = tuple(row[k] for k in key_cols)
+        key = tuple(row.get(k, "") for k in key_cols)
         if key in index:
             existing[index[key]] = row
         else:
@@ -342,6 +343,14 @@ def ingest_ref_data(symbols: list[str], start: date, end: date,
         all_dates.add(d)
         d += timedelta(days=1)
 
+    if not all_dates:
+        log.info("No dates to compute factors for — skipping")
+        _upsert_csv(
+            ref_dir / "security_master.csv",
+            generate_security_master(symbols),
+            key_cols=["sym"],
+        )
+        return
     factor_start = min(all_dates)
     factor_end = max(all_dates)
     factor_rows = compute_adj_factors(symbols, corp_actions, factor_start, factor_end)
@@ -412,7 +421,7 @@ def _synthetic_adj_factors(symbols: list[str],
 # CLI
 # ---------------------------------------------------------------------------
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format=_LOG_FMT,
                         datefmt="%Y-%m-%dT%H:%M:%S", stream=sys.stdout)
 

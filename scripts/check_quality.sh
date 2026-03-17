@@ -35,8 +35,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$DATE" ]; then
-    echo "ERROR: --date is required"
-    echo "Usage: $0 --date YYYY-MM-DD [--table trades|ohlcv_1m]"
+    echo "ERROR: --date is required" >&2
+    echo "Usage: $0 --date YYYY-MM-DD [--table trades|ohlcv_1m]" >&2
     exit 1
 fi
 

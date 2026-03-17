@@ -46,7 +46,7 @@ readManifest:{[manifestPath]
        `$raw`chunk_id;
        `$raw`databento_job_id;
        // "exchange" is the current key; "dataset" is the legacy key for old manifests
-       `$$[`exchange in key raw; raw`exchange; `dataset in key raw; raw`dataset; "XNAS.ITCH"];
+       `$$[`exchange in key raw; raw`exchange; `dataset in key raw; raw`dataset; '"manifest missing exchange/dataset key"];
        `$ssr[raw`schema;"-";"_"];    // normalise Databento "ohlcv-1m" → `ohlcv_1m
        "D"$ssr[raw`date;"-";"."];     // Python writes YYYY-MM-DD; q needs YYYY.MM.DD
        hsym`$raw`file_path;
@@ -63,7 +63,7 @@ readManifest:{[manifestPath]
 // Returns 1b if valid, signals an error string if not.
 // ---------------------------------------------------------------------------
 validateManifest:{[m]
-    if[not (m`file_path) in key m`file_path;
+    if[not count key m`file_path;
         '"file not found: ",string m`file_path
     ];
     if[not (m`schema) in `trades`ohlcv_1m;
@@ -92,20 +92,6 @@ scanManifestDir:{[stagingPath]
  };
 
 // ---------------------------------------------------------------------------
-// readJobStatus — look up the current status of a chunk in the job store.
-// Returns the status as a symbol, or `unknown if the record doesn't exist.
-// jobsDir: hsym path to staging/metadata/jobs/
-// chunkId: symbol
-// ---------------------------------------------------------------------------
-readJobStatus:{[jobsDir;chunkId]
-    p:` sv jobsDir,`$(string chunkId),".json";
-    if[not p in key p; :`unknown];
-    jr:@[{.j.k raze read0 x};p;{[e]`$""}];
-    if[jr~`$""; :`unknown];
-    `$jr`status
- };
-
-// ---------------------------------------------------------------------------
 // processManifests — read, validate, and load all manifests in a directory.
 // loadChunk must be defined before this is called (it lives in loader.q).
 //
@@ -123,8 +109,6 @@ processManifests:{[stagingPath]
     ];
 
     .lg.o[`manifest;"processing ",string[count manifests]," manifest(s)"];
-
-    jobsDir:hsym`$ssr[1_string hsym`$string stagingPath;"manifests";"jobs"];
 
     parsedRaw:@[readManifest;;{[e] 0b}] each manifests;
     parsedValidIdx:where not parsedRaw ~\: 0b;
@@ -153,30 +137,23 @@ processManifests:{[stagingPath]
 
     if[0=count validParsed; :0j];
 
-    // Status check
-    statuses:readJobStatus[jobsDir;] each validParsed`chunk_id;
-    
-    // Archive verified
-    verifiedIdx:where statuses=`verified;
-    toArchive:validPaths verifiedIdx;
-    if[count toArchive;
-        archDir:ssr[1_string jobsDir;"jobs";"manifests/archive"];
-        @[system;"mkdir -p ",archDir;::];
-        {[archDir;mPath] @[system;"mv ",1_string[mPath]," ",archDir,"/";::]} [archDir;] each toArchive;
-        .lg.o[`manifest;"archived ",string[count toArchive]," verified manifests"];
-    ];
-
-    // Remaining to process
-    processIdx:where not statuses=`verified;
-    if[0=count processIdx; :0j];
-
-    toProcess:validParsed processIdx;
+    // Archive processed manifests after loading
+    archDir:ssr[1_string hsym`$string stagingPath;"manifests";"manifests/archive"];
 
     // Grouping by date and schema
-    grouped:group {x[`date],x[`schema]} each toProcess;
-    batches:toProcess value grouped;
+    grouped:group {x[`date],x[`schema]} each validParsed;
+    batches:validParsed value grouped;
+    batchPaths:validPaths value grouped;
 
     results:@[loadChunkBatch;;{[e] .lg.o[`manifest;"load batch error: ",e]; 0j}] each batches;
+
+    // Archive manifests for successfully loaded batches
+    loadedIdx:where results>0;
+    toArchive:raze batchPaths loadedIdx;
+    if[count toArchive;
+        @[system;"mkdir -p ",archDir;::];
+        {[archDir;mPath] @[system;"mv ",1_string[mPath]," ",archDir,"/";::]} [archDir;] each toArchive
+    ];
 
     total:sum results;
     .lg.o[`manifest;"total rows loaded: ",string total];

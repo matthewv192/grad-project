@@ -203,11 +203,13 @@ checkExchangeLoaded:{[partDateDir;tableName;exchange]
 // No-op if the file doesn't exist.
 // ---------------------------------------------------------------------------
 updateJsonFile:{[p;updates]
-    if[not p in key p; :(::)];
+    if[not count key p; :(::)];
     raw:.j.k raze read0 p;
     raw[key updates]:value updates;
     tmp:hsym`$(-4_1_string p),"tmp";
     tmp 0: enlist .j.j raw;
+    // Shell mv for atomic rename. Paths are generated internally (no user input),
+    // so shell-escaping is not required. Protected with @[;;] for error handling.
     mvErr:@[system;"mv ",1_string[tmp]," ",1_string p;{[e]e}];
     if[count mvErr; @[hdel;tmp;::]; '"updateJsonFile rename failed: ",mvErr]
  };
@@ -257,7 +259,7 @@ flushSymbologyMap:{[]
     refDir:hsym`$refDirStr;
     @[system;"mkdir -p ",refDirStr;::];
     mapPath:` sv refDir,`symbology_map.csv;
-    existing:$[mapPath in key mapPath;
+    existing:$[count key mapPath;
         ("SJSDD";enlist csv) 0: mapPath;
         ([] sym:`symbol$(); instrument_id:`long$(); exchange:`symbol$();
             valid_from:`date$(); valid_to:`date$())
@@ -352,7 +354,7 @@ loadChunkBatch:{[manifests]
 
     // Sort before quality checks so ordering check reflects write order,
     // not CSV-read order (multi-exchange batches arrive unsorted by design).
-    raw:update date:partDate from `sym`time xasc delete date from delete chunk_id from raw;
+    raw:update date:partDate from `sym`time xasc delete date,chunk_id from raw;
 
     // Data quality checks on the freshly loaded table batch
     qResult:.[runQualityChecks; (raw; schema; partDate);
@@ -404,7 +406,7 @@ loadChunkBatch:{[manifests]
 
     loadNs:(`long$.z.p-t0);
     timePath:` sv partDateDir,schema,`time;
-    times:(); if[timePath in key timePath; times:get timePath];
+    times:@[get;timePath;{[e] ()}];
 
     {[m;schema;partDate;loadNs;times;nValid;raw]
         chunkId:m`chunk_id;
@@ -449,7 +451,7 @@ runLoader:{[]
     // called .Q.dpft has no `sym` in scope, and `get` on any partition with enumerated
     // symbol columns signals '..sym (sym file not found one level up).
     symPath:` sv HDB_DIR,`sym;
-    if[symPath in key symPath; `sym set get symPath];  // global: visible to unenumAll during merge
+    if[count key symPath; `sym set get symPath];  // global: visible to unenumAll during merge
 
     processManifests manifestDir;
 

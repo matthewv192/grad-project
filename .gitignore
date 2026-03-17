@@ -1,3 +1,6 @@
+# Secrets
+.env
+
 # Downloaded market data and job state — can be large and is reproducible
 staging/
 

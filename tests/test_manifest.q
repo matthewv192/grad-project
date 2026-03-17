@@ -154,8 +154,9 @@ minimalManifest[`created_at]       :"2024-01-15T10:00:00+00:00";
 minimalManifestPath:"/tmp/grad_test_minimal_manifest.json";
 (hsym`$minimalManifestPath) 0: enlist .j.j minimalManifest;
 
-mMinimal:readManifest`$minimalManifestPath;
-assertEq["no exchange/dataset defaults to XNAS.ITCH"; mMinimal`exchange; `$"XNAS.ITCH"];
+// Missing exchange/dataset should now signal an error (no silent default)
+mMinimalErr:@[readManifest;`$minimalManifestPath;{[e] e}];
+assertEq["no exchange/dataset signals error"; mMinimalErr~"manifest missing exchange/dataset key"; 1b];
 
 // ---------------------------------------------------------------------------
 // Test: scanManifestDir on empty directory returns empty list

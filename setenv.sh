@@ -8,7 +8,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # TorQ framework location (read-only — do NOT modify TorQ/)
-export TORQHOME="$(cd "$SCRIPT_DIR/../TorQ" && pwd)"
+# Fallback to the expected relative path if TorQ directory doesn't exist yet.
+export TORQHOME="$(cd "$SCRIPT_DIR/../TorQ" 2>/dev/null && pwd || echo "$SCRIPT_DIR/../TorQ")"
 
 # This package
 export PACKAGEHOME="$SCRIPT_DIR"

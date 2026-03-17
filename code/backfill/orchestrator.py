@@ -29,14 +29,17 @@ Python <-> q boundary:
 """
 
 import argparse
+import collections
 import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -51,10 +54,22 @@ from metrics import ChunkMetrics, write_summary, print_metrics
 # Logging
 # ---------------------------------------------------------------------------
 
-_LOG_FMT = logging.Formatter(
-    '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
+class _JsonFormatter(logging.Formatter):
+    """Emit each log record as a single JSON object."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        obj = {
+            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1] is not None:
+            obj["exc"] = self.formatException(record.exc_info)
+        return json.dumps(obj, default=str)
+
+
+_LOG_FMT = _JsonFormatter()
 
 
 def _configure_logging() -> None:
@@ -88,20 +103,13 @@ _configure_logging()
 log = logging.getLogger("orchestrator")
 
 
-def _j(msg: str) -> str:
-    return json.dumps(msg)
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 DEFAULT_DATASET = "XNAS.ITCH"
 DEFAULT_SCHEMA = "trades"
-SUPPORTED_SCHEMAS = ("trades", "ohlcv-1m")
 DEFAULT_CHUNK_SIZE = 10
-MAX_COST_USD = float(os.environ.get("BACKFILL_MAX_COST_USD", "50.0"))
-MAX_RETRIES = int(os.environ.get("BACKFILL_MAX_RETRIES", "3"))
 
 _HERE = Path(__file__).resolve().parent
 STAGING_DIR = Path(os.environ.get("STAGING_DIR", str(_HERE / "../../staging")))
@@ -110,9 +118,39 @@ PACKAGE_HOME = Path(os.environ.get("PACKAGEHOME", str(_HERE / "../..")))
 POLL_INTERVAL_S = 10
 POLL_TIMEOUT_S = 3600
 
-# Job statuses in lifecycle order
+
+def _parse_env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(f"Invalid {name}={raw!r} (not a number), using default {default}")
+        return default
+
+
+def _parse_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning(f"Invalid {name}={raw!r} (not an integer), using default {default}")
+        return default
+
+
+MAX_COST_USD = _parse_env_float("BACKFILL_MAX_COST_USD", 50.0)
+MAX_RETRIES = _parse_env_int("BACKFILL_MAX_RETRIES", 3)
+
+# Throttle concurrent Databento API calls.  Allows up to 4 in-flight API
+# requests at a time (submit, poll, download, estimate) even when the thread
+# pool has 12 workers.  This prevents hammering the Databento API.
+_API_SEMAPHORE = threading.Semaphore(4)
+
+# Job statuses in lifecycle order — chunks in these states are not re-submitted
 TERMINAL_STATUSES = {"loaded", "verified"}
-SKIP_STATUSES = TERMINAL_STATUSES  # chunks in these states are not re-submitted
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +270,7 @@ class KdbJobStore:
         self.jobs_file = staging_dir / "metadata" / "backfill_jobs"
         self.package_home = package_home
         self.jobstore_script = package_home / "code" / "backfill" / "jobstore.q"
-        self._lock = __import__("threading").Lock()
+        self._lock = threading.Lock()
         self.jobs_file.parent.mkdir(parents=True, exist_ok=True)
 
     def _run_q(self, cmd: dict) -> str:
@@ -265,7 +303,7 @@ class KdbJobStore:
     def _run_q_write(self, cmd: dict) -> None:
         """Run a write operation with file-level locking for cross-process safety."""
         lock_path = self.jobs_file.parent / ".jobstore.lock"
-        with open(lock_path, "w") as lf:
+        with open(lock_path, "a") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
                 self._run_q(cmd)
@@ -306,11 +344,20 @@ class KdbJobStore:
                 "record": self._record_to_dict(record),
             })
 
+    def _parse_json(self, out: str, operation: str) -> list[dict]:
+        """Parse JSON from jobstore.q output, with error handling."""
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as exc:
+            log.error(f"jobstore.q returned invalid JSON for {operation}: "
+                      f"{exc}. Raw output: {out!r:.200}")
+            return []
+
     def load(self, chunk_id: str) -> "JobRecord | None":
         out = self._run_q({"op": "load", "chunk_id": chunk_id})
         if not out:
             return None
-        rows = json.loads(out)
+        rows = self._parse_json(out, f"load({chunk_id!r})")
         if not rows:
             return None
         return self._dict_to_record(rows[0])
@@ -319,14 +366,14 @@ class KdbJobStore:
         out = self._run_q({"op": "loadAll"})
         if not out:
             return []
-        rows = json.loads(out)
+        rows = self._parse_json(out, "loadAll")
         return [self._dict_to_record(r) for r in rows]
 
     def load_failed(self) -> "list[JobRecord]":
         out = self._run_q({"op": "loadFailed", "max_retries": MAX_RETRIES})
         if not out:
             return []
-        rows = json.loads(out)
+        rows = self._parse_json(out, "loadFailed")
         return [self._dict_to_record(r) for r in rows]
 
 
@@ -352,11 +399,11 @@ def generate_chunks(request_id: str, symbols: list[str], start: date,
     chunk_size>1 uses batch-index IDs (<request>_<date>_b000, b001, ...).
     """
     chunks = []
+    batches = [symbols[i:i + chunk_size]
+               for i in range(0, len(symbols), chunk_size)]
     d = start
     while d <= end:
         date_str = d.strftime("%Y.%m.%d")
-        batches = [symbols[i:i + chunk_size]
-                   for i in range(0, len(symbols), chunk_size)]
         for batch_idx, batch_syms in enumerate(batches):
             if chunk_size == 1:
                 safe_sym = re.sub(r"[^A-Za-z0-9]", "_", batch_syms[0])
@@ -402,10 +449,11 @@ def estimate_cost(client: db.Historical, dataset: str, symbols: list[str],
                   schema: str, start: str, end: str,
                   stype_in: str = "raw_symbol") -> float:
     try:
-        return float(client.metadata.get_cost(
-            dataset=dataset, symbols=symbols, schema=schema,
-            start=start, end=end, stype_in=stype_in,
-        ))
+        with _API_SEMAPHORE:
+            return float(client.metadata.get_cost(
+                dataset=dataset, symbols=symbols, schema=schema,
+                start=start, end=end, stype_in=stype_in,
+            ))
     except db.BentoError as exc:
         # Databento API errors (e.g. unknown dataset, bad symbol) — raise so the
         # caller is never left without a cost guard. Fix the dataset/symbol and retry.
@@ -427,44 +475,36 @@ def estimate_cost(client: db.Historical, dataset: str, symbols: list[str],
 def submit_job(client: db.Historical, dataset: str, symbols: list[str],
                schema: str, start: str, end: str,
                stype_in: str = "raw_symbol") -> dict:
-    log.info(_j(f"Submitting: dataset={dataset} schema={schema} "
-                f"symbols={symbols} start={start} end={end} stype_in={stype_in}"))
+    log.info(f"Submitting: dataset={dataset} schema={schema} "
+                f"symbols={symbols} start={start} end={end} stype_in={stype_in}")
     # Request CSV directly so no local DBN-to-CSV conversion is needed.
     # pretty_px/pretty_ts give human-readable prices and ISO timestamps,
     # which is exactly what loader.q expects. map_symbols=True adds the
     # symbol column to the output.
-    job = client.batch.submit_job(
-        dataset=dataset, symbols=symbols, schema=schema,
-        start=start, end=end,
-        encoding="csv", compression=None,
-        pretty_px=True, pretty_ts=True, map_symbols=True,
-        stype_in=stype_in,
-    )
-    log.info(_j(f"Submitted job_id={job['id']} state={job.get('state')}"))
+    with _API_SEMAPHORE:
+        job = client.batch.submit_job(
+            dataset=dataset, symbols=symbols, schema=schema,
+            start=start, end=end,
+            encoding="csv", compression=None,
+            pretty_px=True, pretty_ts=True, map_symbols=True,
+            stype_in=stype_in,
+        )
+    log.info(f"Submitted job_id={job['id']} state={job.get('state')}")
     return job
 
 
 def poll_until_done(client: db.Historical, job_id: str) -> dict:
     deadline = time.monotonic() + POLL_TIMEOUT_S
     while True:
-        # Check deadline before making the API call so a hung/slow API response
-        # cannot cause us to loop past the timeout indefinitely.
         if time.monotonic() > deadline:
             raise RuntimeError(f"Timed out waiting for job {job_id}")
-        # NOTE: The Databento batch SDK does not expose a single-job lookup
-        # endpoint, so we must list ALL jobs in the given states and then
-        # filter by job_id.  This is O(total jobs in your account) — for
-        # accounts with many historical jobs the response can be large.
-        # If this becomes a bottleneck, consider caching the full job list
-        # across concurrent poll_until_done calls for the same request.
-        #
-        # The SDK's JobState enum only recognises 'queued', 'processing',
-        # 'done', 'expired' — passing 'failed' causes a validation error.
-        # We catch that case below and surface it as a clear RuntimeError.
+        # Fetch all non-terminal + expired states in a single API call to
+        # avoid a second round-trip when the job expires between calls.
         try:
-            jobs = client.batch.list_jobs(
-                states=["queued", "processing", "done"]
-            )
+            with _API_SEMAPHORE:
+                jobs = client.batch.list_jobs(
+                    states=["queued", "processing", "done", "expired"]
+                )
         except Exception as sdk_exc:
             if "failed" in str(sdk_exc).lower() or "jobstate" in str(sdk_exc).lower():
                 raise RuntimeError(
@@ -473,13 +513,9 @@ def poll_until_done(client: db.Historical, job_id: str) -> dict:
             raise
         match = next((j for j in jobs if j["id"] == job_id), None)
         if match is None:
-            expired = client.batch.list_jobs(states=["expired"])
-            match = next((j for j in expired if j["id"] == job_id), None)
-            if match:
-                raise RuntimeError(f"Job {job_id} expired")
             raise RuntimeError(f"Job {job_id} not found")
         state = match.get("state", "")
-        log.info(_j(f"Polling job_id={job_id} state={state}"))
+        log.info(f"Polling job_id={job_id} state={state}")
         if state == "done":
             return match
         if state == "expired":
@@ -498,12 +534,14 @@ def sha256_of_file(path: Path) -> str:
 def count_csv_rows(path: Path) -> int:
     """Count data rows in a CSV file (excluding the header).
 
-    Uses wc -l which reads only newline bytes, avoiding a full Python-level
-    line-by-line scan that would re-read the entire file after download.
+    Reads only raw bytes to count newlines efficiently without decoding
+    the entire file into Python strings.
     """
-    result = subprocess.run(["wc", "-l", str(path)],
-                            capture_output=True, text=True, check=True)
-    return int(result.stdout.split()[0]) - 1  # subtract header line
+    count = 0
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            count += chunk.count(b"\n")
+    return max(count - 1, 0)  # subtract header line
 
 
 def infer_date_from_filename(name: str) -> str:
@@ -533,13 +571,14 @@ def download_csv(client: db.Historical, job_id: str,
     """
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info(_j(f"Downloading job_id={job_id}"))
-    downloaded = client.batch.download(job_id=job_id, output_dir=str(chunk_dir))
-    log.info(_j(f"Downloaded {len(downloaded)} file(s)"))
+    log.info(f"Downloading job_id={job_id}")
+    with _API_SEMAPHORE:
+        downloaded = client.batch.download(job_id=job_id, output_dir=str(chunk_dir))
+    log.info(f"Downloaded {len(downloaded)} file(s)")
 
-    csv_paths = [Path(p) for p in downloaded if Path(p).suffix == ".csv"]
+    csv_paths = [pp for p in downloaded if (pp := Path(p)).suffix == ".csv"]
     for p in csv_paths:
-        log.info(_j(f"CSV: {p.name} ({p.stat().st_size} bytes)"))
+        log.info(f"CSV: {p.name} ({p.stat().st_size} bytes)")
     return csv_paths
 
 
@@ -579,25 +618,75 @@ def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
     with open(tmp, "w") as f:
         json.dump(manifest, f, indent=2)
     tmp.rename(manifest_path)
-    log.info(_j(f"Manifest: {manifest_path.name} rows={row_count}"))
+    log.info(f"Manifest: {manifest_path.name} rows={row_count}")
     return manifest
+
+
+def _cleanup_staging_csvs(job_store: "KdbJobStore", staging_dir: Path,
+                          request_id: str | None = None) -> int:
+    """Remove CSV directories for chunks that reached 'verified' status.
+
+    Returns the number of directories cleaned up.  Failures are logged as
+    warnings and never abort the pipeline — the CSVs are no longer needed
+    once the data is in the HDB.
+    """
+    records = job_store.load_all()
+    if request_id:
+        records = [r for r in records if r.request_id == request_id]
+    verified = [r for r in records if r.status == "verified"]
+    cleaned = 0
+    for r in verified:
+        chunk_dir = staging_dir / r.chunk_id
+        if chunk_dir.is_dir():
+            try:
+                shutil.rmtree(chunk_dir)
+                cleaned += 1
+            except OSError as exc:
+                log.warning(f"Could not clean up {chunk_dir}: {exc}")
+    if cleaned:
+        log.info(f"Cleaned up {cleaned} staging CSV director(ies)")
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
 # q loader invocation
 # ---------------------------------------------------------------------------
 
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we don't have permission to signal it
+        return True
+
+
 def _acquire_lock_with_timeout(fh, timeout_s: int = 300) -> None:
-    """Acquire an exclusive flock with a timeout.
+    """Acquire an exclusive flock with a timeout and stale-lock detection.
 
     Uses LOCK_NB (non-blocking) with a retry loop so a hung or crashed process
     that holds the lock does not cause this process to block indefinitely.
+
+    Stale lock detection: the holding PID is written to the lock file after
+    acquisition.  On contention, we read that PID and check if it's alive.
+    If the holding process is dead, we log a warning and delete the stale lock
+    file so the next attempt succeeds.
+
     Raises RuntimeError if the lock cannot be acquired within timeout_s seconds.
     """
     deadline = time.monotonic() + timeout_s
+    stale_checked = False
     while True:
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Write our PID so other processes can detect stale locks
+            fh.seek(0)
+            fh.truncate()
+            fh.write(str(os.getpid()))
+            fh.flush()
             return
         except BlockingIOError:
             if time.monotonic() >= deadline:
@@ -607,7 +696,35 @@ def _acquire_lock_with_timeout(fh, timeout_s: int = 300) -> None:
                     f"while holding the lock. Delete the stale lock file to recover: "
                     f"{fh.name}"
                 )
+            # Stale lock detection: check once per acquisition attempt cycle
+            if not stale_checked:
+                stale_checked = True
+                try:
+                    fh.seek(0)
+                    content = fh.read().strip()
+                    if content and content.isdigit():
+                        holder_pid = int(content)
+                        if not _is_pid_alive(holder_pid):
+                            log.warning(
+                                f"Stale lock detected: PID {holder_pid} is no longer "
+                                f"running. Releasing stale lock: {fh.name}"
+                            )
+                            # Close and recreate the lock file to break the stale flock
+                            lock_path = fh.name
+                            fh.close()
+                            os.unlink(lock_path)
+                            # Caller will re-open; signal via RuntimeError
+                            raise _StaleLockRemoved(lock_path)
+                except (_StaleLockRemoved, OSError):
+                    raise
+                except Exception:
+                    pass  # best-effort; fall through to normal retry
             time.sleep(5)
+
+
+class _StaleLockRemoved(Exception):
+    """Internal signal: stale lock file was removed, caller should retry."""
+    pass
 
 
 def run_q_loader(package_home: Path, manifest_dir: Path,
@@ -624,14 +741,25 @@ def run_q_loader(package_home: Path, manifest_dir: Path,
     # or a manual re-run) from calling .Q.dpft on the same partition simultaneously.
     lock_path = Path(hdb_dir).parent / ".q_loader.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fh = open(lock_path, "w")
-    try:
-        _acquire_lock_with_timeout(lock_fh, timeout_s=300)
-        _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home,
-                             request_id=request_id)
-    finally:
-        fcntl.flock(lock_fh, fcntl.LOCK_UN)
-        lock_fh.close()
+
+    # If a stale lock is detected (dead PID), the lock file is removed and
+    # _StaleLockRemoved is raised.  We retry once with a fresh file handle.
+    for attempt in range(2):
+        lock_fh = open(lock_path, "a+")
+        try:
+            _acquire_lock_with_timeout(lock_fh, timeout_s=300)
+            try:
+                _run_q_loader_locked(package_home, manifest_dir, hdb_dir, torq_home,
+                                     request_id=request_id)
+            finally:
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            return  # success
+        except _StaleLockRemoved:
+            log.info("Retrying lock acquisition after stale lock removal")
+            continue
+        finally:
+            if not lock_fh.closed:
+                lock_fh.close()
 
 
 def _hdb_already_loaded_dates(hdb_dir: Path, dates: list[date],
@@ -687,7 +815,7 @@ def _hdb_already_loaded_dates(hdb_dir: Path, dates: list[date],
                     pass
         return existing
     except Exception as exc:
-        log.warning(_j(f"Pre-flight HDB check failed (proceeding anyway): {exc}"))
+        log.warning(f"Pre-flight HDB check failed (proceeding anyway): {exc}")
         return set()
 
 
@@ -699,7 +827,7 @@ def _run_ref_ingest(symbols: list[str], start: date, end: date) -> None:
     """
     script = PACKAGE_HOME / "code" / "reference" / "ref_ingest.py"
     if not script.exists():
-        log.warning(_j("ref_ingest.py not found — skipping reference data update"))
+        log.warning("ref_ingest.py not found — skipping reference data update")
         return
     cmd = [
         sys.executable, str(script),
@@ -708,18 +836,18 @@ def _run_ref_ingest(symbols: list[str], start: date, end: date) -> None:
         "--end", str(end),
     ]
     env = {**os.environ, "STAGING_DIR": str(STAGING_DIR)}
-    log.info(_j(f"Updating reference data: symbols={symbols} range={start}..{end}"))
+    log.info(f"Updating reference data: symbols={symbols} range={start}..{end}")
     result = subprocess.run(
         cmd, capture_output=True, text=True,
         cwd=str(PACKAGE_HOME), env=env,
     )
     for line in result.stdout.splitlines():
-        log.info(_j(f"[ref_ingest] {line}"))
+        log.info(f"[ref_ingest] {line}")
     if result.returncode != 0:
-        log.warning(_j(
+        log.warning(
             f"ref_ingest exited {result.returncode} — "
             "reference data may be incomplete (market data load was successful)"
-        ))
+        )
 
 
 def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
@@ -742,18 +870,18 @@ def _run_q_loader_locked(package_home: Path, manifest_dir: Path,
     if request_id:
         env["REQUEST_ID"] = request_id
 
-    log.info(_j(f"Invoking q loader: cwd={package_home}"))
+    log.info(f"Invoking q loader: cwd={package_home}")
     result = subprocess.run(
         cmd, input=q_script, text=True,
         cwd=str(package_home), env=env, capture_output=True,
     )
     for line in result.stdout.splitlines():
-        log.info(_j(f"[q] {line}"))
+        log.info(f"[q] {line}")
     for line in result.stderr.splitlines():
-        log.warning(_j(f"[q stderr] {line}"))
+        log.warning(f"[q stderr] {line}")
     if result.returncode != 0:
         raise RuntimeError(f"q loader exited {result.returncode}")
-    log.info(_j("q loader done"))
+    log.info("q loader done")
 
 
 # ---------------------------------------------------------------------------
@@ -767,8 +895,8 @@ def _write_manifests_for_record(chunk: Chunk, record: "JobRecord",
     for part_idx, raw_path in enumerate(all_paths):
         part_path = Path(raw_path)
         if not part_path.exists():
-            log.warning(_j(f"Chunk {chunk.chunk_id}: CSV not found on resume, "
-                           f"skipping manifest for {part_path.name}"))
+            log.warning(f"Chunk {chunk.chunk_id}: CSV not found on resume, "
+                           f"skipping manifest for {part_path.name}")
             continue
         part_chunk_id = (chunk.chunk_id if part_idx == 0
                          else f"{chunk.chunk_id}_part{part_idx + 1}")
@@ -779,8 +907,7 @@ def _write_manifests_for_record(chunk: Chunk, record: "JobRecord",
 
 
 def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
-              staging_dir: Path, manifest_dir: Path,
-              skip_load: bool = False) -> bool:
+              staging_dir: Path, manifest_dir: Path) -> bool:
     """
     Execute the full pipeline for one chunk. Returns True on success.
 
@@ -808,8 +935,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
     metrics.save(staging_dir)
 
     # ---- Already done? ----
-    if record and record.status in SKIP_STATUSES:
-        log.info(_j(f"Chunk {chunk.chunk_id} already {record.status}, skipping"))
+    if record and record.status in TERMINAL_STATUSES:
+        log.info(f"Chunk {chunk.chunk_id} already {record.status}, skipping")
         return True
 
     # ---- Resume from downloaded, or failed-after-download? ----
@@ -825,17 +952,17 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
             checksum_ok = (bool(record.checksum)
                            and sha256_of_file(csv_path) == record.checksum)
             if not checksum_ok:
-                log.warning(_j(
+                log.warning(
                     f"Chunk {chunk.chunk_id}: checksum mismatch on resume "
                     f"(expected {record.checksum[:16]}...) — re-downloading"
-                ))
+                )
                 record.status = "pending"
                 record.checksum = ""
                 record.file_paths = []
                 job_store.save(record)
                 # Fall through to re-submit below
             else:
-                log.info(_j(f"Chunk {chunk.chunk_id}: resume OK, skipping download"))
+                log.info(f"Chunk {chunk.chunk_id}: resume OK, skipping download")
                 _write_manifests_for_record(chunk, record, manifest_dir)
                 record.status = "loaded"
                 job_store.save(record)
@@ -844,8 +971,8 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
     # ---- Resume from submitted/running? ----
     job_id = None
     if record and record.status in ("submitted", "running") and record.databento_job_id:
-        log.info(_j(f"Chunk {chunk.chunk_id} resuming from {record.status}, "
-                    f"polling job {record.databento_job_id}"))
+        log.info(f"Chunk {chunk.chunk_id} resuming from {record.status}, "
+                    f"polling job {record.databento_job_id}")
         job_id = record.databento_job_id
     else:
         # Fresh start — initialise record
@@ -889,7 +1016,7 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         metrics.mark("poll_start")
         job = poll_until_done(client, job_id)
         metrics.mark("poll_end")
-        log.info(_j(f"Job {job_id} done, cost={job.get('cost')}"))
+        log.info(f"Job {job_id} done, cost={job.get('cost')}")
 
         # ---- Download ----
         metrics.mark("download_start")
@@ -899,10 +1026,10 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
             raise RuntimeError("No CSV files produced after download")
 
         if len(csv_paths) > 1:
-            log.warning(_j(
+            log.warning(
                 f"Job {job_id} delivered {len(csv_paths)} CSVs; "
                 "writing one manifest per file"
-            ))
+            )
 
         # Use primary CSV for job-store record (first file)
         csv_path = csv_paths[0]
@@ -945,7 +1072,7 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
         metrics.failure_type = ft
         metrics.mark("total_end")
         metrics.save(staging_dir)
-        log.error(_j(f"Chunk {chunk.chunk_id} failed [{ft}] (attempt {record.retries}): {exc}"))
+        log.exception(f"Chunk {chunk.chunk_id} failed [{ft}] (attempt {record.retries}): {exc}")
         return False
 
 
@@ -955,7 +1082,7 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
 
 def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
                          job_store: JobStore, staging_dir: Path,
-                         manifest_dir: Path, skip_load: bool,
+                         manifest_dir: Path,
                          max_workers: int,
                          backoffs: dict | None = None) -> tuple[int, int]:
     """
@@ -972,10 +1099,9 @@ def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
     def _work(chunk: Chunk) -> bool:
         wait = (backoffs or {}).get(chunk.chunk_id, 0)
         if wait:
-            log.info(_j(f"Chunk {chunk.chunk_id}: waiting {wait}s before retry"))
+            log.info(f"Chunk {chunk.chunk_id}: waiting {wait}s before retry")
             time.sleep(wait)
-        return run_chunk(client, chunk, job_store, staging_dir, manifest_dir,
-                         skip_load=skip_load)
+        return run_chunk(client, chunk, job_store, staging_dir, manifest_dir)
 
     succeeded = 0
     failed = 0
@@ -988,7 +1114,7 @@ def _run_chunks_parallel(client: db.Historical, chunks: list[Chunk],
             try:
                 ok = future.result()
             except Exception as exc:
-                log.error(_j(f"Chunk {chunk.chunk_id} raised unexpected exception: {exc}"))
+                log.exception(f"Chunk {chunk.chunk_id} raised unexpected exception: {exc}")
                 ok = False
             done += 1
             if ok:
@@ -1035,8 +1161,6 @@ def _classify_failure(error_msg: str, failure_type: str) -> str:
 
 def _print_run_summary(records: list, title: str = "Backfill Summary") -> None:
     """Print a human-readable terminal summary after a run completes."""
-    from collections import defaultdict
-
     verified = [r for r in records if r.status == "verified"]
     failed   = [r for r in records if r.status == "failed"]
 
@@ -1046,7 +1170,7 @@ def _print_run_summary(records: list, title: str = "Backfill Summary") -> None:
 
     if verified:
         # Group by dataset (exchange) → collect unique syms and total rows
-        by_exchange: dict[str, dict] = defaultdict(lambda: {"syms": set(), "rows": 0})
+        by_exchange: dict[str, dict] = collections.defaultdict(lambda: {"syms": set(), "rows": 0})
         for r in verified:
             by_exchange[r.dataset]["syms"].update(r.symbols)
             by_exchange[r.dataset]["rows"] += r.row_count
@@ -1070,8 +1194,8 @@ def _print_run_summary(records: list, title: str = "Backfill Summary") -> None:
     if failed:
         print(f"\n  FAILURES ({len(failed)} chunk(s)):")
         # Group failures by reason so repeated causes appear once
-        from collections import Counter
-        reasons = Counter(
+
+        reasons = collections.Counter(
             _classify_failure(r.error_msg, r.failure_type) for r in failed
         )
         for reason, count in reasons.most_common():
@@ -1102,8 +1226,8 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
             return
 
     # Group by request_id
-    from collections import defaultdict, Counter
-    by_req: dict[str, list[JobRecord]] = defaultdict(list)
+
+    by_req: dict[str, list[JobRecord]] = collections.defaultdict(list)
     for r in records:
         by_req[r.request_id].append(r)
 
@@ -1113,7 +1237,7 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
     print("-" * 110)
 
     for req_id, recs in sorted(by_req.items()):
-        counts = Counter(r.status for r in recs)
+        counts = collections.Counter(r.status for r in recs)
         schema = recs[0].schema if recs else ""
         print(f"{req_id:<40} {schema:<10} {len(recs):>6} "
               f"{counts.get('submitted', 0):>9} "
@@ -1136,7 +1260,7 @@ def print_status(staging_dir: Path, request_id: str | None = None) -> None:
 # Argument parsing
 # ---------------------------------------------------------------------------
 
-def parse_args(argv=None):
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Databento historical batch backfill orchestrator."
     )
@@ -1148,7 +1272,7 @@ def parse_args(argv=None):
     parser.add_argument("--end", default=None,
                         help="End date YYYY-MM-DD (inclusive)")
     parser.add_argument("--schema", default=DEFAULT_SCHEMA,
-                        choices=SUPPORTED_SCHEMAS)
+                        choices=("trades", "ohlcv-1m"))
     parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE,
                         help=f"Symbols per Databento batch job (default: {DEFAULT_CHUNK_SIZE}). "
@@ -1179,7 +1303,7 @@ def parse_args(argv=None):
 # Main
 # ---------------------------------------------------------------------------
 
-def main(argv=None):
+def main(argv=None) -> None:
     args = parse_args(argv)
 
     skip_load = args.download_only
@@ -1200,17 +1324,17 @@ def main(argv=None):
                   or f"load_only_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
         _add_file_logging(PACKAGE_HOME / "logs", run_id)
         manifest_dir = STAGING_DIR / "metadata" / "manifests"
-        log.info(_j("load-only mode: running q loader on existing manifests"))
+        log.info("load-only mode: running q loader on existing manifests")
         try:
             run_q_loader(PACKAGE_HOME, manifest_dir)
         except Exception as exc:
-            log.error(_j(f"q loader failed: {exc}"))
+            log.exception(f"q loader failed: {exc}")
             sys.exit(1)
         return
 
     api_key = os.environ.get("DATABENTO_API_KEY")
     if not api_key:
-        log.error(_j("DATABENTO_API_KEY is not set."))
+        log.error("DATABENTO_API_KEY is not set.")
         sys.exit(1)
 
     job_store = JobStore(STAGING_DIR)
@@ -1221,12 +1345,12 @@ def main(argv=None):
     if args.retry_failed:
         failed = job_store.load_failed()
         if not failed:
-            log.info(_j("No failed chunks to retry."))
+            log.info("No failed chunks to retry.")
             return
         retry_id = (args.request_id
                     or f"retry_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
         _add_file_logging(PACKAGE_HOME / "logs", retry_id)
-        log.info(_j(f"Retrying {len(failed)} failed chunk(s)"))
+        log.info(f"Retrying {len(failed)} failed chunk(s)")
 
         retry_chunks = []
         backoffs = {}
@@ -1247,20 +1371,21 @@ def main(argv=None):
             backoffs[chunk.chunk_id] = wait
 
         _run_chunks_parallel(client, retry_chunks, job_store, STAGING_DIR,
-                             manifest_dir, skip_load=skip_load,
+                             manifest_dir,
                              max_workers=args.workers, backoffs=backoffs)
 
         if not skip_load:
             try:
                 run_q_loader(PACKAGE_HOME, manifest_dir)
             except Exception as exc:
-                log.error(_j(f"q loader failed: {exc}"))
+                log.exception(f"q loader failed: {exc}")
                 sys.exit(1)
             # ---- Update reference data for retried symbols/range ----
             retry_syms = sorted({s for c in retry_chunks for s in c.symbols})
             retry_start = min(c.date for c in retry_chunks)
             retry_end = max(c.date for c in retry_chunks)
             _run_ref_ingest(retry_syms, retry_start, retry_end)
+            _cleanup_staging_csvs(job_store, STAGING_DIR)
 
         # ---- Terminal summary for retry run ----
         retry_ids = {c.request_id for c in retry_chunks}
@@ -1270,8 +1395,8 @@ def main(argv=None):
 
     # ---- Normal mode: require symbols/start/end ----
     if not args.symbols or not args.start or not args.end:
-        log.error(_j("--symbols, --start, --end are required "
-                     "(or use --retry-failed / --status / --load-only)"))
+        log.error("--symbols, --start, --end are required "
+                     "(or use --retry-failed / --status / --load-only)")
         sys.exit(1)
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -1296,18 +1421,18 @@ def main(argv=None):
                                 for i in range((end - start).days + 1)})
             new_syms = sorted(symbols)
             if existing_dates != new_dates or existing_syms != new_syms:
-                log.error(_j(
+                log.error(
                     f"request_id={request_id!r} already exists in the job store "
                     f"with different parameters. "
                     f"Existing: dates={existing_dates} syms={existing_syms}. "
                     f"Requested: dates={new_dates} syms={new_syms}. "
                     "Use a different --request-id or omit it to auto-generate one."
-                ))
+                )
                 sys.exit(1)
-            log.warning(_j(
+            log.warning(
                 f"request_id={request_id!r} already exists with matching "
                 "parameters — treating as idempotent resume"
-            ))
+            )
 
     chunks = generate_chunks(request_id, symbols, start, end,
                              args.chunk_size, args.schema, args.dataset,
@@ -1321,23 +1446,23 @@ def main(argv=None):
     if existing_dates:
         skipped_chunks = [c for c in chunks if c.date in existing_dates]
         chunks = [c for c in chunks if c.date not in existing_dates]
-        log.warning(_j(
+        log.warning(
             f"Pre-flight: {len(skipped_chunks)} chunk(s) already in HDB "
             f"(exchange={args.dataset} schema={args.schema}) — skipped before API submission. "
             f"Dates: {sorted(str(d) for d in existing_dates)}"
-        ))
+        )
         print(f"\nNOTE: {len(skipped_chunks)} chunk(s) already in HDB — skipping "
               f"(saves API cost):")
         for d in sorted(existing_dates):
             print(f"  {args.dataset}  {args.schema}  {d}  — already loaded")
         if not chunks:
             print("\nAll requested chunks already in HDB. Nothing to do.\n")
-            log.info(_j("Pre-flight: all chunks already present, exiting cleanly"))
+            log.info("Pre-flight: all chunks already present, exiting cleanly")
             return
         print()
 
-    log.info(_j(f"request_id={request_id} chunks={len(chunks)} "
-                f"symbols={len(symbols)} dates={start}..{end}"))
+    log.info(f"request_id={request_id} chunks={len(chunks)} "
+                f"symbols={len(symbols)} dates={start}..{end}")
 
     # ---- Dry run: cost estimate and chunk plan ----
     if args.dry_run:
@@ -1357,36 +1482,38 @@ def main(argv=None):
         return
 
     # ---- Run all chunks (parallel) ----
-    log.info(_j(f"Running {len(chunks)} chunk(s) with up to {args.workers} worker(s)"))
+    log.info(f"Running {len(chunks)} chunk(s) with up to {args.workers} worker(s)")
     _wall_start = time.time()
     succeeded, failed = _run_chunks_parallel(
         client, chunks, job_store, STAGING_DIR, manifest_dir,
-        skip_load=skip_load, max_workers=args.workers,
+        max_workers=args.workers,
     )
     _wall_s = time.time() - _wall_start
 
-    log.info(_j(f"Chunks complete: {succeeded} succeeded, {failed} failed"))
+    log.info(f"Chunks complete: {succeeded} succeeded, {failed} failed")
 
     if failed:
-        log.warning(_j(
+        log.warning(
             f"{failed} chunk(s) failed. Run with --retry-failed to requeue, "
             f"or check staging/metadata/backfill_jobs for details."
-        ))
+        )
 
     # ---- Invoke q loader for all downloaded manifests ----
     if not skip_load and succeeded > 0:
         try:
             run_q_loader(PACKAGE_HOME, manifest_dir, request_id=request_id)
         except Exception as exc:
-            log.error(_j(f"q loader failed: {exc}"))
+            log.exception(f"q loader failed: {exc}")
             sys.exit(1)
         # ---- Update reference data (corp actions + adj factors) ----
         _run_ref_ingest(symbols, start, end)
+        # ---- Clean up staging CSVs for verified chunks ----
+        _cleanup_staging_csvs(job_store, STAGING_DIR, request_id=request_id)
 
     # Emit metrics summary for this request
     summary_path = write_summary(STAGING_DIR, request_id, wall_s=_wall_s)
     if summary_path:
-        log.info(_j(f"Metrics summary: {summary_path}"))
+        log.info(f"Metrics summary: {summary_path}")
 
     # ---- Terminal summary ----
     run_records = [r for r in job_store.load_all() if r.request_id == request_id]
@@ -1395,7 +1522,7 @@ def main(argv=None):
     if failed > 0:
         sys.exit(1)
 
-    log.info(_j(f"Backfill complete: request_id={request_id}"))
+    log.info(f"Backfill complete: request_id={request_id}")
 
 
 if __name__ == "__main__":

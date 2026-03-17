@@ -109,7 +109,7 @@ ref_corp_actions:([]
     record_date:`date$();
     effective_date:`date$();
     factor:`float$();
-    description:()            // generic list — string description or null
+    description:();           // generic list — string description or null
     loaded_at:`timestamp$()
  );
 

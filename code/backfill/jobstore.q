@@ -71,20 +71,21 @@ buildRow:{[r]
 
 // Convert table to JSON-serializable form (dates/timestamps → strings)
 tableToJson:{[t]
-    t:update date:string date from t;
-    t:update created_at:tsStr each created_at from t;
-    t:update updated_at:tsStr each updated_at from t;
-    t:update min_ts:tsStr each min_ts from t;
-    t:update max_ts:tsStr each max_ts from t;
-    t:update request_id:string request_id from t;
-    t:update chunk_id:string chunk_id from t;
-    t:update databento_job_id:string databento_job_id from t;
-    t:update dataset:string dataset from t;
-    t:update schema:string schema from t;
-    t:update status:string status from t;
-    t:update failure_type:string failure_type from t;
-    t:update file_path:string file_path from t;
-    t:update checksum:string checksum from t;
+    t:update date:string date,
+             created_at:tsStr each created_at,
+             updated_at:tsStr each updated_at,
+             min_ts:tsStr each min_ts,
+             max_ts:tsStr each max_ts,
+             request_id:string request_id,
+             chunk_id:string chunk_id,
+             databento_job_id:string databento_job_id,
+             dataset:string dataset,
+             schema:string schema,
+             status:string status,
+             failure_type:string failure_type,
+             file_path:string file_path,
+             checksum:string checksum
+        from t;
     .j.j t
  };
 

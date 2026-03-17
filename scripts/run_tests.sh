@@ -8,7 +8,7 @@
 # prints a summary at the end so all results are visible in one pass.
 # Exits 0 only when every test file passes.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -27,13 +27,19 @@ PASS=0
 FAIL=0
 FAILURES=()
 
+YELLOW='\033[0;33m'
+
 run_q_test() {
     local label="$1"
     local file="$2"
+    local output
     printf "  %-45s" "$label"
-    if q "$file" -q 2>&1 | grep -qE "^PASS:"; then
+    output=$(q "$file" -q 2>&1)
+    if echo "$output" | grep -qE "^PASS:"; then
         echo -e "${GREEN}PASS${NC}"
         PASS=$((PASS + 1))
+    elif echo "$output" | grep -qE "^SKIP:"; then
+        echo -e "${YELLOW}SKIP${NC}"
     else
         echo -e "${RED}FAIL${NC}"
         FAIL=$((FAIL + 1))
@@ -59,7 +65,7 @@ run_py_test() {
 # Activate Python venv if present
 # ---------------------------------------------------------------------------
 
-VENV_DIR="$HOME/venv"
+VENV_DIR="$(cd "$PACKAGE_DIR/.." && pwd)/venv"
 if [ -f "$VENV_DIR/bin/activate" ]; then
     # shellcheck disable=SC1091
     source "$VENV_DIR/bin/activate"
@@ -97,6 +103,7 @@ echo ""
 echo "=== Python tests ==="
 run_py_test "orchestrator" tests/test_orchestrator.py
 run_py_test "metrics"      tests/test_metrics.py
+run_py_test "ref_ingest"   tests/test_ref_ingest.py
 
 # ---------------------------------------------------------------------------
 # Summary

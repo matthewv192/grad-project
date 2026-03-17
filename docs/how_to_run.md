@@ -422,3 +422,69 @@ The `error_msg` and `failure_type` fields contain the exact failure reason.
 | Chunk shows `failed` in status | API error or cost limit hit | Run `./bin/backfill --retry-failed`; inspect error via `--status` or query `staging/metadata/backfill_jobs` directly |
 | Old stale manifest causes validation error | CSV file deleted but manifest remains | Safe to ignore — logged as a warning, does not block other chunks |
 | `ModuleNotFoundError: No module named 'databento'` | venv not found | Run `scripts/setup_python.sh` to create the venv, then retry |
+
+---
+
+## Recovery Procedures
+
+When something goes wrong in production, use the table below to recover.
+The pipeline is designed for idempotent re-runs — in most cases, simply
+re-running the same command (or `--retry-failed`) is sufficient.
+
+| Failure | What happened | Recovery |
+|---------|---------------|----------|
+| Orchestrator crashes mid-run | Some chunks completed, others didn't. Job store has partial state. | Re-run with the same `--request-id` (or omit it to resume the auto-generated one). Idempotency skips already-verified chunks and resumes from the last checkpoint. |
+| q loader crashes mid-`.Q.dpft` | Partition may be partially written. Lock file may be stale. | Re-run — stale lock detection will clean up the old lock automatically. The loader overwrites the incomplete partition on retry. |
+| Databento API is down | Chunks fail with `api_error` status. | Wait for the API to recover, then run `./bin/backfill --retry-failed`. |
+| HDB partition is corrupt | Bad data in `hdb/YYYY.MM.DD/<schema>/` (wrong row count, missing columns, etc.) | Delete the entire partition directory (`rm -rf hdb/YYYY.MM.DD/<schema>/`) and re-run the backfill for that date. The pipeline will treat it as a fresh load. |
+| Job store is corrupt | `staging/metadata/backfill_jobs` is unreadable or has inconsistent data. | Delete the file (`rm staging/metadata/backfill_jobs`) and re-run. The CSVs and manifests in `staging/` are the real source of truth; the job store is just a status tracker. |
+| Cost limit exceeded | Chunk fails immediately with `cost exceeds limit` in error_msg. | Either increase the limit (`export BACKFILL_MAX_COST_USD=100`) or reduce the date range / symbol count, then `--retry-failed`. |
+| Disk full during download | Download fails, partial CSVs left in `staging/<chunk_id>/`. | Free disk space (run `./scripts/cleanup_staging.sh`), then `--retry-failed`. The checksum mismatch on the partial CSV triggers a fresh re-download. |
+
+---
+
+## Maintenance
+
+### Staging cleanup
+
+Downloaded CSVs are cleaned up automatically after successful verification,
+but failed or abandoned runs leave data behind. The cleanup script removes
+staging chunk directories and old log files:
+
+```bash
+# Default: remove staging dirs older than 7 days, logs older than 30 days
+./scripts/cleanup_staging.sh
+
+# Custom retention
+STAGING_DAYS=3 LOG_DAYS=14 ./scripts/cleanup_staging.sh
+```
+
+For automated cleanup, add a cron entry:
+
+```bash
+# Run daily at 02:00 — adjust paths to your installation
+0 2 * * * cd /path/to/grad-project && ./scripts/cleanup_staging.sh >> logs/cleanup.log 2>&1
+```
+
+### Log rotation
+
+Each backfill run creates a per-request log file in `logs/`. The Python
+`RotatingFileHandler` caps each file at 10 MB with 5 backups (50 MB max per
+request). Across many requests, the `logs/` directory grows — the cleanup
+script handles this by removing files older than the `LOG_DAYS` retention
+period (default: 30 days).
+
+### Monitoring disk usage
+
+For production deployments, monitor the `staging/` and `hdb/` directories:
+
+```bash
+du -sh staging/ hdb/ logs/
+```
+
+Typical sizes:
+- `staging/`: near-zero after successful runs (CSVs cleaned up); can grow to
+  10-50 GB during a large backfill before cleanup runs
+- `hdb/`: grows proportionally to data loaded (roughly 50-200 MB per
+  symbol-day for trades, 1-5 MB for ohlcv-1m)
+- `logs/`: bounded by cleanup script retention
