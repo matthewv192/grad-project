@@ -333,6 +333,7 @@ class TestJobStore(unittest.TestCase):
 
     def test_save_creates_kdb_table_file(self):
         self.store.save(self._make())
+        self.store.flush()
         jobs_file = Path(self.tmp) / "metadata" / "backfill_jobs"
         self.assertTrue(jobs_file.exists())
 

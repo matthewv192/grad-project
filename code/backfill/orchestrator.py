@@ -252,16 +252,23 @@ def _from_kdb_ts(kdb_str: str) -> str:
 
 class KdbJobStore:
     """
-    kdb-backed persistent job store.
+    kdb-backed persistent job store with write batching.
 
-    Each operation spawns a q subprocess that runs jobstore.q, communicating
-    via JSON on stdin/stdout.  The binary table file lives at:
+    Writes are buffered in a Python-side dict and flushed to the kdb binary
+    table in a single subprocess call (one q invocation per flush instead of
+    one per save).  Reads are served from the in-memory cache after an initial
+    load from disk.
+
+    The binary table file lives at:
         <staging_dir>/metadata/backfill_jobs
 
     Thread safety: a threading.Lock serialises concurrent saves within one
     process.  A file-level flock prevents races across multiple orchestrator
-    processes.
+    processes during flush.
     """
+
+    # Flush to disk after this many buffered writes
+    _FLUSH_THRESHOLD = 20
 
     def __init__(self, staging_dir: Path,
                  package_home: Path = None):
@@ -269,17 +276,15 @@ class KdbJobStore:
             package_home = PACKAGE_HOME
         self.jobs_file = staging_dir / "metadata" / "backfill_jobs"
         self.package_home = package_home
-        self.jobstore_script = package_home / "code" / "backfill" / "jobstore.q"
         self._lock = threading.Lock()
         self.jobs_file.parent.mkdir(parents=True, exist_ok=True)
+        # In-memory cache: chunk_id → JobRecord
+        self._cache: dict[str, JobRecord] = {}
+        self._dirty: dict[str, dict] = {}  # chunk_id → kdb-ready dict
+        self._cache_loaded = False
 
     def _run_q(self, cmd: dict) -> str:
-        """Spawn a q subprocess, load jobstore.q, return stdout.
-
-        The JSON command is passed via the JOBSTORE_CMD env var.  The script is
-        loaded via stdin to avoid the kdb+ quirk where `q -q script.q` ignores
-        the script file when stdin is a pipe.
-        """
+        """Spawn a q subprocess, load jobstore.q, return stdout."""
         q_script = "\\l code/backfill/jobstore.q\n"
         env = {**os.environ,
                "JOBS_FILE": str(self.jobs_file.resolve()),
@@ -300,13 +305,13 @@ class KdbJobStore:
             )
         return result.stdout.strip()
 
-    def _run_q_write(self, cmd: dict) -> None:
-        """Run a write operation with file-level locking for cross-process safety."""
+    def _run_q_locked(self, cmd: dict) -> str:
+        """Run a q operation with file-level locking for cross-process safety."""
         lock_path = self.jobs_file.parent / ".jobstore.lock"
         with open(lock_path, "a") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                self._run_q(cmd)
+                return self._run_q(cmd)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 
@@ -327,22 +332,12 @@ class KdbJobStore:
         d = dict(d)
         d["created_at"] = _from_kdb_ts(d.get("created_at", ""))
         d["updated_at"] = _from_kdb_ts(d.get("updated_at", ""))
-        # error_msg comes back as a list from q (generic list column)
         if isinstance(d.get("error_msg"), list):
             d["error_msg"] = d["error_msg"][0] if d["error_msg"] else ""
-        # date comes back as kdb+ format "YYYY.MM.DD" — normalise to ISO "YYYY-MM-DD"
         date_val = d.get("date", "")
         if date_val and "." in date_val:
             d["date"] = date_val.replace(".", "-")
         return JobRecord.from_dict(d)
-
-    def save(self, record: "JobRecord") -> None:
-        record.touch()
-        with self._lock:
-            self._run_q_write({
-                "op": "upsert",
-                "record": self._record_to_dict(record),
-            })
 
     def _parse_json(self, out: str, operation: str) -> list[dict]:
         """Parse JSON from jobstore.q output, with error handling."""
@@ -353,28 +348,52 @@ class KdbJobStore:
                       f"{exc}. Raw output: {out!r:.200}")
             return []
 
+    def _ensure_cache(self) -> None:
+        """Load the full job store from disk into the in-memory cache (once)."""
+        if self._cache_loaded:
+            return
+        out = self._run_q({"op": "loadAll"})
+        if out:
+            rows = self._parse_json(out, "loadAll (cache init)")
+            for d in rows:
+                rec = self._dict_to_record(d)
+                self._cache[rec.chunk_id] = rec
+        self._cache_loaded = True
+
+    def flush(self) -> None:
+        """Write all buffered records to the kdb binary table in one subprocess."""
+        if not self._dirty:
+            return
+        records = list(self._dirty.values())
+        self._run_q_locked({
+            "op": "batchUpsert",
+            "records": records,
+        })
+        self._dirty.clear()
+
+    def save(self, record: "JobRecord") -> None:
+        record.touch()
+        with self._lock:
+            self._cache[record.chunk_id] = record
+            self._dirty[record.chunk_id] = self._record_to_dict(record)
+            if len(self._dirty) >= self._FLUSH_THRESHOLD:
+                self.flush()
+
     def load(self, chunk_id: str) -> "JobRecord | None":
-        out = self._run_q({"op": "load", "chunk_id": chunk_id})
-        if not out:
-            return None
-        rows = self._parse_json(out, f"load({chunk_id!r})")
-        if not rows:
-            return None
-        return self._dict_to_record(rows[0])
+        with self._lock:
+            self._ensure_cache()
+            return self._cache.get(chunk_id)
 
     def load_all(self) -> "list[JobRecord]":
-        out = self._run_q({"op": "loadAll"})
-        if not out:
-            return []
-        rows = self._parse_json(out, "loadAll")
-        return [self._dict_to_record(r) for r in rows]
+        with self._lock:
+            self._ensure_cache()
+            return list(self._cache.values())
 
     def load_failed(self) -> "list[JobRecord]":
-        out = self._run_q({"op": "loadFailed", "max_retries": MAX_RETRIES})
-        if not out:
-            return []
-        rows = self._parse_json(out, "loadFailed")
-        return [self._dict_to_record(r) for r in rows]
+        with self._lock:
+            self._ensure_cache()
+            return [r for r in self._cache.values()
+                    if r.status == "failed" and r.retries < MAX_RETRIES]
 
 
 # Keep backward-compatible name
@@ -1374,6 +1393,7 @@ def main(argv=None) -> None:
         _run_chunks_parallel(client, retry_chunks, job_store, STAGING_DIR,
                              manifest_dir,
                              max_workers=args.workers, backoffs=backoffs)
+        job_store.flush()
 
         if not skip_load:
             try:
@@ -1490,6 +1510,7 @@ def main(argv=None) -> None:
         max_workers=args.workers,
     )
     _wall_s = time.time() - _wall_start
+    job_store.flush()
 
     log.info(f"Chunks complete: {succeeded} succeeded, {failed} failed")
 

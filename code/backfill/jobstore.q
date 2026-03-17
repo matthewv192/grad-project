@@ -12,6 +12,7 @@
 //
 // Command JSON — one of:
 //   {"op":"upsert","record":{...}}
+//   {"op":"batchUpsert","records":[{...},{...},...]}
 //   {"op":"load","chunk_id":"..."}
 //   {"op":"loadAll"}
 //   {"op":"loadFailed","max_retries":3}
@@ -96,9 +97,18 @@ tableToJson:{[t]
 cmd:.j.k getenv`JOBSTORE_CMD;
 op:cmd`op;
 
+upsertOne:{[r]
+    `jobs set delete from jobs where chunk_id=`$(r`chunk_id);
+    `jobs set jobs,buildRow[r];
+ };
+
 $[op~"upsert";
-    [`jobs set delete from jobs where chunk_id=`$(cmd`record)`chunk_id;
-     `jobs set jobs,buildRow[cmd`record];
+    [upsertOne[cmd`record];
+     JOBS_FILE set jobs;
+     -1 "ok";
+    ];
+  op~"batchUpsert";
+    [upsertOne each cmd`records;
      JOBS_FILE set jobs;
      -1 "ok";
     ];
