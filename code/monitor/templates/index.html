@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backfill Monitor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+        .nav-tabs .nav-link { color: #adb5bd; }
+        .nav-tabs .nav-link.active { color: #fff; background-color: #212529; border-color: #495057 #495057 #212529; }
+        .status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+        .status-verified  { background-color: #198754; color: #fff; }
+        .status-loaded    { background-color: #0d6efd; color: #fff; }
+        .status-downloaded{ background-color: #0dcaf0; color: #000; }
+        .status-running   { background-color: #ffc107; color: #000; }
+        .status-submitted { background-color: #6c757d; color: #fff; }
+        .status-pending   { background-color: #495057; color: #fff; }
+        .status-failed    { background-color: #dc3545; color: #fff; }
+        .progress-bar-segment { height: 8px; display: inline-block; }
+        .card-metric { text-align: center; }
+        .card-metric .value { font-size: 1.8rem; font-weight: 700; }
+        .card-metric .label { font-size: 0.8rem; color: #adb5bd; text-transform: uppercase; }
+        .coverage-cell { width: 60px; height: 30px; text-align: center; font-size: 0.7rem; border-radius: 3px; }
+        .coverage-present { background-color: #198754; color: #fff; }
+        .coverage-empty   { background-color: #343a40; color: #6c757d; }
+        table.table-sm td, table.table-sm th { padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+        .chunk-detail { display: none; }
+        .chunk-detail.show { display: table-row; }
+        .clickable { cursor: pointer; }
+        .last-update { font-size: 0.75rem; color: #6c757d; }
+        #timingChart { max-height: 500px; }
+        .disk-bar { height: 24px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark border-bottom border-secondary px-3">
+        <span class="navbar-brand mb-0 h1">Backfill Monitor</span>
+        <span class="last-update" id="lastUpdate"></span>
+    </nav>
+
+    <div class="container-fluid mt-3">
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link active" id="tab-jobs" data-bs-toggle="tab"
+                        data-bs-target="#pane-jobs" type="button" role="tab">Jobs</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-metrics" data-bs-toggle="tab"
+                        data-bs-target="#pane-metrics" type="button" role="tab">Metrics</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-failures" data-bs-toggle="tab"
+                        data-bs-target="#pane-failures" type="button" role="tab">Failures</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-hdb" data-bs-toggle="tab"
+                        data-bs-target="#pane-hdb" type="button" role="tab">HDB Coverage</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-disk" data-bs-toggle="tab"
+                        data-bs-target="#pane-disk" type="button" role="tab">Disk</button>
+            </li>
+        </ul>
+
+        <div class="tab-content mt-3" id="mainTabContent">
+
+            <!-- ============================================================ -->
+            <!-- JOBS TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade show active" id="pane-jobs" role="tabpanel">
+                <div id="jobs-content"><p class="text-muted">Loading...</p></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- METRICS TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-metrics" role="tabpanel">
+                <div class="row mb-3">
+                    <div class="col-auto">
+                        <select id="metrics-request-select" class="form-select form-select-sm">
+                            <option value="">Select a request...</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="metrics-summary" class="row g-3 mb-3"></div>
+                <div style="position:relative; max-height:500px;">
+                    <canvas id="timingChart"></canvas>
+                </div>
+                <div id="metrics-table" class="mt-3"></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- FAILURES TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-failures" role="tabpanel">
+                <div id="failures-content"><p class="text-muted">Loading...</p></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- HDB COVERAGE TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-hdb" role="tabpanel">
+                <div class="row mb-3 g-2 align-items-end">
+                    <div class="col-auto">
+                        <label class="form-label form-label-sm mb-0">Table</label>
+                        <select id="hdb-table" class="form-select form-select-sm">
+                            <option value="trades">trades</option>
+                            <option value="ohlcv_1m">ohlcv_1m</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-sm btn-outline-light" id="hdb-load-btn">Load Coverage</button>
+                    </div>
+                </div>
+                <div id="hdb-partitions" class="mb-4"></div>
+                <div id="hdb-coverage"></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- DISK TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-disk" role="tabpanel">
+                <div id="disk-content"><p class="text-muted">Loading...</p></div>
+            </div>
+
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // =====================================================================
+    // Global state
+    // =====================================================================
+    let refreshTimer = null;
+    let timingChart = null;
+
+    function updateTimestamp() {
+        document.getElementById('lastUpdate').textContent =
+            'Updated: ' + new Date().toLocaleTimeString();
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+    }
+
+    function statusBadge(status) {
+        return `<span class="status-badge status-${status}">${status}</span>`;
+    }
+
+    // =====================================================================
+    // JOBS TAB
+    // =====================================================================
+    async function loadJobs() {
+        try {
+            const resp = await fetch('/api/jobs');
+            const data = await resp.json();
+            renderJobs(data);
+            updateTimestamp();
+        } catch (e) { console.error('loadJobs:', e); }
+    }
+
+    function renderJobs(requests) {
+        if (!requests.length) {
+            document.getElementById('jobs-content').innerHTML =
+                '<p class="text-muted">No job records found.</p>';
+            return;
+        }
+
+        const statusOrder = ['verified','loaded','downloaded','running','submitted','pending','failed'];
+        const statusColors = {
+            verified:'#198754', loaded:'#0d6efd', downloaded:'#0dcaf0',
+            running:'#ffc107', submitted:'#6c757d', pending:'#495057', failed:'#dc3545'
+        };
+
+        let html = '<table class="table table-dark table-sm table-hover">';
+        html += '<thead><tr>';
+        html += '<th>Request ID</th><th>Date Range</th><th>Last Updated</th><th>Symbols</th><th>Schema</th><th>Dataset</th><th>Chunks</th>';
+        html += '<th style="min-width:200px">Status</th>';
+        html += '<th>Verified</th><th>Failed</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const req of requests) {
+            const sc = req.status_counts;
+            const total = req.chunk_count;
+
+            // Progress bar
+            let bar = '<div class="d-flex" style="height:8px;border-radius:4px;overflow:hidden;">';
+            for (const s of statusOrder) {
+                const count = sc[s] || 0;
+                if (count > 0) {
+                    const pct = (count / total * 100).toFixed(1);
+                    bar += `<div style="width:${pct}%;background:${statusColors[s]}" title="${s}: ${count}"></div>`;
+                }
+            }
+            bar += '</div>';
+
+            const failCount = sc.failed || 0;
+            const verifiedCount = sc.verified || 0;
+
+            const syms = (req.symbols || []);
+            let symsDisplay = syms.slice(0, 5).join(', ');
+            if (syms.length > 5) symsDisplay += ` +${syms.length - 5}`;
+
+            // Date range from chunk dates
+            const dates = (req.date_range || {});
+            const dateRange = dates.start && dates.end
+                ? (dates.start === dates.end ? dates.start : `${dates.start} — ${dates.end}`)
+                : '';
+
+            // Last updated
+            const lastUpdated = req.last_updated || '';
+            const updatedDisplay = lastUpdated ? new Date(lastUpdated).toLocaleString() : '';
+
+            html += `<tr class="clickable" onclick="toggleChunks('${req.request_id}')">`;
+            html += `<td><code>${req.request_id}</code></td>`;
+            html += `<td>${dateRange}</td>`;
+            html += `<td>${updatedDisplay}</td>`;
+            html += `<td title="${syms.join(', ')}">${symsDisplay}</td>`;
+            html += `<td>${req.schema}</td>`;
+            html += `<td>${req.dataset}</td>`;
+            html += `<td>${total}</td>`;
+            html += `<td>${bar}</td>`;
+            html += `<td>${verifiedCount}</td>`;
+            html += `<td>${failCount > 0 ? '<span class="text-danger">' + failCount + '</span>' : '0'}</td>`;
+            html += '</tr>';
+
+            // Expandable chunk detail
+            html += `<tr class="chunk-detail" id="chunks-${req.request_id}"><td colspan="10">`;
+            html += '<table class="table table-dark table-sm mb-0">';
+            html += '<thead><tr><th>Chunk ID</th><th>Date</th><th>Symbols</th><th>Status</th><th>Rows</th><th>Error</th></tr></thead><tbody>';
+            for (const c of req.chunks) {
+                const syms = Array.isArray(c.symbols) ? c.symbols.join(', ') : (c.symbols || '');
+                const err = c.error_msg || '';
+                html += '<tr>';
+                html += `<td><code style="font-size:0.75rem">${c.chunk_id}</code></td>`;
+                html += `<td>${c.date || ''}</td>`;
+                html += `<td>${syms}</td>`;
+                html += `<td>${statusBadge(c.status)}</td>`;
+                html += `<td>${(c.row_count || 0).toLocaleString()}</td>`;
+                html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${err}">${err}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table></td></tr>';
+        }
+
+        html += '</tbody></table>';
+        document.getElementById('jobs-content').innerHTML = html;
+    }
+
+    function toggleChunks(reqId) {
+        const el = document.getElementById('chunks-' + reqId);
+        if (el) el.classList.toggle('show');
+    }
+
+    // =====================================================================
+    // METRICS TAB
+    // =====================================================================
+    async function loadMetricsList() {
+        try {
+            const resp = await fetch('/api/metrics');
+            const ids = await resp.json();
+            const sel = document.getElementById('metrics-request-select');
+            const current = sel.value;
+            sel.innerHTML = '<option value="">Select a request...</option>';
+            for (const id of ids) {
+                sel.innerHTML += `<option value="${id}" ${id === current ? 'selected' : ''}>${id}</option>`;
+            }
+        } catch (e) { console.error('loadMetricsList:', e); }
+    }
+
+    async function loadMetricsDetail(requestId) {
+        if (!requestId) {
+            document.getElementById('metrics-summary').innerHTML = '';
+            document.getElementById('metrics-table').innerHTML = '';
+            if (timingChart) { timingChart.destroy(); timingChart = null; }
+            return;
+        }
+        try {
+            const resp = await fetch(`/api/metrics/${requestId}`);
+            const data = await resp.json();
+            renderMetrics(data);
+        } catch (e) { console.error('loadMetricsDetail:', e); }
+    }
+
+    function renderMetrics(data) {
+        const { chunks, summary } = data;
+
+        // Summary cards
+        let cards = '';
+        if (summary) {
+            const items = [
+                { label: 'Chunks', value: summary.chunk_count },
+                { label: 'Total Rows', value: (summary.total_rows || 0).toLocaleString() },
+                { label: 'Loaded Rows', value: (summary.total_rows_loaded || 0).toLocaleString() },
+                { label: 'Wall Time', value: summary.wall_s != null ? summary.wall_s.toFixed(1) + 's' : '--' },
+                { label: 'Total Bytes', value: formatBytes(summary.total_bytes || 0) },
+                { label: 'Failed', value: summary.failed_chunk_count || 0 },
+            ];
+            for (const item of items) {
+                cards += `<div class="col-auto"><div class="card bg-dark border-secondary card-metric px-3 py-2">
+                    <div class="value">${item.value}</div><div class="label">${item.label}</div>
+                </div></div>`;
+            }
+        }
+        document.getElementById('metrics-summary').innerHTML = cards;
+
+        // Timing chart
+        if (timingChart) { timingChart.destroy(); timingChart = null; }
+        if (chunks && chunks.length) {
+            const ctx = document.getElementById('timingChart').getContext('2d');
+            const labels = chunks.map(c => {
+                const id = c.chunk_id || '';
+                return id.length > 25 ? '...' + id.slice(-22) : id;
+            });
+            timingChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Submit', data: chunks.map(c => c.submit_s || 0), backgroundColor: '#0d6efd' },
+                        { label: 'Poll',   data: chunks.map(c => c.poll_s || 0),   backgroundColor: '#ffc107' },
+                        { label: 'Download', data: chunks.map(c => c.download_s || 0), backgroundColor: '#198754' },
+                        { label: 'Load',   data: chunks.map(c => c.load_s || 0),   backgroundColor: '#dc3545' },
+                    ]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true, title: { display: true, text: 'Seconds', color: '#adb5bd' },
+                             ticks: { color: '#adb5bd' }, grid: { color: '#343a40' } },
+                        y: { stacked: true, ticks: { color: '#adb5bd', font: { size: 10 } },
+                             grid: { color: '#343a40' } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#adb5bd' } },
+                        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw.toFixed(2)}s` } }
+                    }
+                }
+            });
+        }
+
+        // Detail table
+        if (chunks && chunks.length) {
+            let html = '<table class="table table-dark table-sm">';
+            html += '<thead><tr><th>Chunk</th><th>Rows</th><th>Loaded</th><th>Total (s)</th>';
+            html += '<th>Submit</th><th>Poll</th><th>Download</th><th>Load</th></tr></thead><tbody>';
+            for (const c of chunks) {
+                html += '<tr>';
+                html += `<td><code style="font-size:0.75rem">${c.chunk_id || ''}</code></td>`;
+                html += `<td>${(c.row_count || 0).toLocaleString()}</td>`;
+                html += `<td>${(c.rows_loaded || 0).toLocaleString()}</td>`;
+                html += `<td>${(c.total_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.submit_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.poll_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.download_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.load_s || 0).toFixed(1)}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            document.getElementById('metrics-table').innerHTML = html;
+        }
+    }
+
+    // =====================================================================
+    // FAILURES TAB
+    // =====================================================================
+    async function loadFailures() {
+        try {
+            const resp = await fetch('/api/failures');
+            const data = await resp.json();
+            renderFailures(data);
+            updateTimestamp();
+        } catch (e) { console.error('loadFailures:', e); }
+    }
+
+    function renderFailures(groups) {
+        if (!groups.length) {
+            document.getElementById('failures-content').innerHTML =
+                '<p class="text-success">No failed chunks.</p>';
+            return;
+        }
+
+        let html = '';
+        for (const g of groups) {
+            html += `<h6 class="mt-3"><span class="status-badge status-failed">${g.failure_type}</span> (${g.count} chunk(s))</h6>`;
+            html += '<table class="table table-dark table-sm">';
+            html += '<thead><tr><th>Chunk ID</th><th>Date</th><th>Symbols</th><th>Retries</th><th>Error</th></tr></thead><tbody>';
+            for (const c of g.chunks) {
+                const syms = Array.isArray(c.symbols) ? c.symbols.slice(0, 3).join(', ') : '';
+                const extra = Array.isArray(c.symbols) && c.symbols.length > 3 ? ` +${c.symbols.length - 3}` : '';
+                html += '<tr>';
+                html += `<td><code style="font-size:0.75rem">${c.chunk_id || ''}</code></td>`;
+                html += `<td>${c.date || ''}</td>`;
+                html += `<td>${syms}${extra}</td>`;
+                html += `<td>${c.retries || 0}</td>`;
+                html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                            title="${(c.error_msg || '').replace(/"/g, '&quot;')}">${c.error_msg || ''}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        }
+        document.getElementById('failures-content').innerHTML = html;
+    }
+
+    // =====================================================================
+    // HDB COVERAGE TAB
+    // =====================================================================
+    async function loadHdbCoverage() {
+        const table = document.getElementById('hdb-table').value;
+        document.getElementById('hdb-coverage').innerHTML = '<p class="text-muted">Loading HDB data (this may take a moment)...</p>';
+
+        try {
+            const resp = await fetch(`/api/hdb/coverage?table=${table}`);
+            const data = await resp.json();
+            renderCoverage(data, table);
+        } catch (e) {
+            document.getElementById('hdb-coverage').innerHTML = '<p class="text-danger">Failed to load HDB data.</p>';
+            console.error('loadHdbCoverage:', e);
+        }
+    }
+
+    function renderCoverage(data, table) {
+        if (!data.length) {
+            document.getElementById('hdb-coverage').innerHTML = '<p class="text-muted">No data found in HDB.</p>';
+            return;
+        }
+
+        // Pivot: data is [{sym, date, rows}, ...]
+        const syms = [...new Set(data.map(d => d.sym))].sort();
+        const dates = [...new Set(data.map(d => d.date))].sort();
+        const lookup = {};
+        let totalRows = 0;
+        for (const d of data) {
+            lookup[d.sym + '|' + d.date] = d.rows;
+            totalRows += d.rows;
+        }
+
+        let html = `<p class="text-muted mb-2">${table}: ${syms.length} symbol(s), ${dates.length} partition(s), ${totalRows.toLocaleString()} total rows</p>`;
+        html += '<div style="overflow-x:auto"><table class="table table-dark table-sm" style="font-size:0.8rem">';
+        html += '<thead><tr><th>Sym</th>';
+        for (const d of dates) {
+            html += `<th class="text-center" style="writing-mode:vertical-lr;transform:rotate(180deg);height:90px;font-size:0.7rem">${d}</th>`;
+        }
+        html += '<th class="text-end">Total</th></tr></thead><tbody>';
+
+        for (const sym of syms) {
+            html += `<tr><td><strong>${sym}</strong></td>`;
+            let symTotal = 0;
+            for (const d of dates) {
+                const rows = lookup[sym + '|' + d] || 0;
+                symTotal += rows;
+                if (rows > 0) {
+                    html += `<td class="text-center coverage-cell coverage-present" title="${sym} ${d}: ${rows.toLocaleString()}">${rows.toLocaleString()}</td>`;
+                } else {
+                    html += '<td class="text-center coverage-cell coverage-empty">-</td>';
+                }
+            }
+            html += `<td class="text-end">${symTotal.toLocaleString()}</td></tr>`;
+        }
+
+        // Totals row
+        html += '<tr class="border-top"><td><strong>Total</strong></td>';
+        for (const d of dates) {
+            const colTotal = data.filter(r => r.date === d).reduce((a, r) => a + r.rows, 0);
+            html += `<td class="text-center" style="font-size:0.7rem">${colTotal.toLocaleString()}</td>`;
+        }
+        html += `<td class="text-end"><strong>${totalRows.toLocaleString()}</strong></td></tr>`;
+
+        html += '</tbody></table></div>';
+        document.getElementById('hdb-coverage').innerHTML = html;
+    }
+
+    // =====================================================================
+    // DISK TAB
+    // =====================================================================
+    async function loadDisk() {
+        try {
+            const resp = await fetch('/api/disk');
+            const data = await resp.json();
+            renderDisk(data);
+            updateTimestamp();
+        } catch (e) { console.error('loadDisk:', e); }
+    }
+
+    function renderDisk(data) {
+        const colors = { staging: '#ffc107', hdb: '#0d6efd', logs: '#198754' };
+        const maxBytes = Math.max(...Object.values(data).map(d => d.bytes), 1);
+
+        let html = '<div class="row g-3">';
+        for (const [name, info] of Object.entries(data)) {
+            const pct = Math.max((info.bytes / maxBytes * 100), 1).toFixed(0);
+            html += `<div class="col-md-4">
+                <div class="card bg-dark border-secondary">
+                    <div class="card-body">
+                        <h6 class="card-title text-uppercase">${name}</h6>
+                        <div class="value mb-1" style="font-size:1.5rem;font-weight:700">${formatBytes(info.bytes)}</div>
+                        <div class="disk-bar" style="width:${pct}%;background:${colors[name] || '#6c757d'}"></div>
+                        <div class="text-muted mt-1" style="font-size:0.75rem">${info.path}</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+        document.getElementById('disk-content').innerHTML = html;
+    }
+
+    // =====================================================================
+    // Tab switching and polling
+    // =====================================================================
+    function startPolling(tabId) {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = null;
+
+        switch (tabId) {
+            case 'pane-jobs':
+                loadJobs();
+                refreshTimer = setInterval(loadJobs, 5000);
+                break;
+            case 'pane-metrics':
+                loadMetricsList();
+                break;
+            case 'pane-failures':
+                loadFailures();
+                refreshTimer = setInterval(loadFailures, 5000);
+                break;
+            case 'pane-hdb':
+                // HDB loaded on-demand via button, not auto-refresh
+                break;
+            case 'pane-disk':
+                loadDisk();
+                refreshTimer = setInterval(loadDisk, 30000);
+                break;
+        }
+    }
+
+    // Listen for tab switches
+    document.querySelectorAll('#mainTabs button[data-bs-toggle="tab"]').forEach(btn => {
+        btn.addEventListener('shown.bs.tab', e => {
+            startPolling(e.target.getAttribute('data-bs-target').replace('#', ''));
+        });
+    });
+
+    // Metrics request selector
+    document.getElementById('metrics-request-select').addEventListener('change', e => {
+        loadMetricsDetail(e.target.value);
+    });
+
+    // HDB load button
+    document.getElementById('hdb-load-btn').addEventListener('click', loadHdbCoverage);
+
+    // Initial load
+    startPolling('pane-jobs');
+    </script>
+</body>
+</html>

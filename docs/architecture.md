@@ -56,8 +56,8 @@ hdb/
 ```
 
 **4. Key Scripts**
-- **Shell**: `bin/backfill` (entrypoint — sources env, activates venv, calls orchestrator)
-- **Python**: `orchestrator.py` (API client, cost control), `metrics.py` (timing)
+- **Shell**: `bin/backfill` (entrypoint — sources env, activates venv, calls orchestrator), `bin/monitor` (monitoring dashboard)
+- **Python**: `orchestrator.py` (API client, cost control), `metrics.py` (timing), `monitor/app.py` (Flask dashboard)
 - **q**: `loader.q`, `manifest.q`, `quality.q`, `jobstore.q`, `adjlib.q`
 - **Reference**: `ref_ingest.py`, `ref_tables.q`
 
@@ -80,7 +80,7 @@ All communication between Python and q goes through files on disk. Python never 
 |---|---|---|
 | `<chunk_id>/<job_id>/*.csv` | `download_csv()` | `loadChunkBatch()` |
 | `metadata/manifests/*.json` | `write_manifest()` | `processManifests()` |
-| `metadata/backfill_jobs` | `KdbJobStore` (via `jobstore.q`) | `KdbJobStore` (via `jobstore.q`) |
+| `metadata/backfill_jobs` | `JobStore` (via `jobstore.q`) | `JobStore` (via `jobstore.q`) |
 | `metrics/<req>/<chunk>.json` | `metrics.py` (stub) | `updateMetrics()` (q fills timing) |
 | `reference/symbology_map.csv` | `flushSymbologyMap()` | `ref_tables.q` → `resolveSymbol()` |
 
@@ -103,6 +103,14 @@ Partitioned by `date`, splayed tables sorted by `` `sym`time `` within each part
 | `ref_ingest.py` | Fetch real corp actions and dividends via yfinance; compute daily cumulative adjustment factors; called automatically after each backfill. `--synthetic` flag available for CI/offline use. |
 | `ref_tables.q` | Load reference CSVs into in-memory tables; `resolveSymbol()` / `resolveInstrumentId()` for point-in-time lookups |
 | `adjlib.q` | `applyAdj()` applies split/dividend factors; `getAdjustedClose()` returns OHLCV + `adj_close` in `backward` or `forward` terms with optional `asOf` timestamp for point-in-time factor selection |
+
+### Monitoring Dashboard
+
+| Component | Responsibility |
+|---|---|
+| `app.py` | Read-only Flask web dashboard (default port 8080, override via `MONITOR_PORT`). Serves JSON API endpoints for jobs, metrics, failures, HDB coverage, and disk usage. Uses a 3-second TTL cache to avoid spawning q subprocesses on every poll. |
+| `hdb_query.py` | Spawns short-lived q subprocesses for HDB inspection: `list_partitions()`, `partition_detail()`, `coverage_matrix()`. Each query has a 30-second timeout. |
+| `templates/index.html` | Single-page dashboard (Bootstrap 5, Chart.js) with five tabs: Jobs, Metrics, Failures, HDB Coverage, Disk. Auto-refreshes at tab-specific intervals. |
 
 ---
 

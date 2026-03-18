@@ -26,7 +26,8 @@ system "l ",$[count .adjlib.pkg;.adjlib.pkg,"/schema/schema.q";"schema/schema.q"
 system "l ",$[count .adjlib.pkg;.adjlib.pkg,"/code/reference/ref_tables.q";"code/reference/ref_tables.q"];
 
 if[not `lg in key `.;
-    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}
+    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;};
+    .lg.e:{[proc;msg] -1 (string .z.p)," [ERROR][",string[proc],"] ",msg;}
  ];
 
 // ---------------------------------------------------------------------------

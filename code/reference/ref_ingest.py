@@ -170,6 +170,10 @@ def compute_adj_factors(symbols: list[str], corp_actions: list[dict],
       dates on/after 2020-08-31 → cumulative_factor = 1.0
 
     Multiple events are multiplied together in chronological order.
+
+    Efficiency: precomputes a suffix-product per symbol so each day is O(1)
+    lookup instead of O(events) iteration.  Total cost is O(days × symbols)
+    plus O(events) for the one-time suffix-product build.
     """
     # Group events by symbol, sorted ascending by ex_date
     events_by_sym: dict[str, list[tuple]] = defaultdict(list)
@@ -182,21 +186,51 @@ def compute_adj_factors(symbols: list[str], corp_actions: list[dict],
     for sym in events_by_sym:
         events_by_sym[sym].sort(key=lambda x: x[0])
 
+    # Precompute suffix-product arrays per symbol so that looking up the
+    # cumulative factor for any day D is a single bisect rather than a
+    # linear scan over all events.
+    #
+    # For events sorted by ex_date: suffix_cum[i] = product of factor[i:]
+    # For a given day D, find the first event with ex_date > D (via bisect),
+    # then the cumulative factor is suffix_cum[that_index].
+    import bisect
+
+    # Per-symbol precomputed structures
+    _precomputed: dict[str, tuple[list[date], list[float], list[float], list[float]]] = {}
+    for sym, events in events_by_sym.items():
+        n = len(events)
+        ex_dates = [e[0] for e in events]
+        # suffix products: cum, split, div
+        s_cum = [1.0] * (n + 1)
+        s_split = [1.0] * (n + 1)
+        s_div = [1.0] * (n + 1)
+        for i in range(n - 1, -1, -1):
+            _, factor, action_type = events[i]
+            s_cum[i] = factor * s_cum[i + 1]
+            if action_type == "split":
+                s_split[i] = factor * s_split[i + 1]
+                s_div[i] = s_div[i + 1]
+            else:
+                s_split[i] = s_split[i + 1]
+                s_div[i] = factor * s_div[i + 1]
+        _precomputed[sym] = (ex_dates, s_cum, s_split, s_div)
+
     loaded_at = _now_kdb()
     rows = []
     current = start
     while current <= end:
         for sym in symbols:
-            cum = 1.0
-            split_f = 1.0
-            div_f = 1.0
-            for ex_d, factor, action_type in events_by_sym.get(sym, []):
-                if ex_d > current:
-                    cum *= factor
-                    if action_type == "split":
-                        split_f *= factor
-                    else:
-                        div_f *= factor
+            if sym in _precomputed:
+                ex_dates, s_cum, s_split, s_div = _precomputed[sym]
+                # bisect_right finds first index where ex_date > current
+                idx = bisect.bisect_right(ex_dates, current)
+                cum = s_cum[idx]
+                split_f = s_split[idx]
+                div_f = s_div[idx]
+            else:
+                cum = 1.0
+                split_f = 1.0
+                div_f = 1.0
             rows.append({
                 "sym": sym,
                 "date": str(current),

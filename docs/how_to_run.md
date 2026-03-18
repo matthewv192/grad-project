@@ -81,12 +81,16 @@ All commands use `bin/backfill`, which handles environment setup automatically.
 | `--dataset` | `XNAS.ITCH` | Databento dataset identifier |
 | `--chunk-size` | `20` | Symbols per Databento batch job |
 | `--workers` | `12` | Parallel chunk workers |
+| `--request-id` | _(auto-generated)_ | Override auto-generated request ID. Reusing an existing ID with the same parameters resumes; different parameters aborts. |
 | `--dry-run` | off | Print cost estimate only; no API calls |
 | `--download-only` | off | Download and stage CSVs; skip the q loader |
 | `--load-only` | off | Skip API calls; run the q loader on existing staged manifests |
+| `--status` | off | Print a summary of all job statuses and exit |
+| `--retry-failed` | off | Retry chunks with `failed` status (exponential backoff) |
 | `--metrics` | off | Print per-chunk timing metrics and exit |
 | `--failures` | off | Print detailed failure breakdown grouped by error type |
 | `--gaps` | off | Per-symbol report of missing trading days in HDB (requires `--symbols`, `--start`, `--end`) |
+| `--stype-in` | `raw_symbol` | Databento symbol type for submit/cost API calls (`raw_symbol`, `continuous`, `instrument_id`) |
 
 `bin/backfill` sources `setenv.sh` and activates the venv automatically. It
 submits one Databento job per symbol-batch per trading day, running up to 12
@@ -474,9 +478,36 @@ request). Across many requests, the `logs/` directory grows — the cleanup
 script handles this by removing files older than the `LOG_DAYS` retention
 period (default: 30 days).
 
+### Monitoring dashboard
+
+A read-only web dashboard is available for monitoring pipeline status, HDB coverage, and disk usage without needing to run CLI commands.
+
+```bash
+./bin/monitor
+# then open http://localhost:8080
+```
+
+Override the port with `MONITOR_PORT`:
+
+```bash
+MONITOR_PORT=9090 ./bin/monitor
+```
+
+The dashboard has five tabs:
+
+| Tab | Content | Refresh |
+|-----|---------|---------|
+| **Jobs** | Request list with status progress bars. Click a row to expand per-chunk detail (status, rows, errors). | Every 5s |
+| **Metrics** | Select a request to see a stacked bar chart of submit/poll/download/load timing per chunk, plus summary cards (total rows, wall time, bytes). | On selection |
+| **Failures** | Failed chunks grouped by failure type with date, symbols, retry count, and error message. | Every 5s |
+| **HDB Coverage** | Sym x date heatmap with row counts per cell. Select `trades` or `ohlcv_1m`. | On-demand (button) |
+| **Disk** | Size of `staging/`, `hdb/`, and `logs/` directories. | Every 30s |
+
+The dashboard is read-only — it does not submit, retry, or modify any data. It reads from the same files the CLI uses: the kdb job store, metrics JSONs, and HDB partitions. During an active backfill, the Jobs tab updates live as chunks progress through the pipeline.
+
 ### Monitoring disk usage
 
-For production deployments, monitor the `staging/` and `hdb/` directories:
+For production deployments, monitor the `staging/` and `hdb/` directories via the dashboard's Disk tab, or from the command line:
 
 ```bash
 du -sh staging/ hdb/ logs/

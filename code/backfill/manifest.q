@@ -17,7 +17,8 @@
 
 // Fallback logger (overridden if TorQ is loaded before this file)
 if[not `lg in key `.;
-    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}
+    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;};
+    .lg.e:{[proc;msg] -1 (string .z.p)," [ERROR][",string[proc],"] ",msg;}
  ];
 
 \l schema/schema.q

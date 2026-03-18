@@ -35,15 +35,15 @@ run_q_test() {
     local output
     printf "  %-45s" "$label"
     output=$(q "$file" -q 2>&1)
-    if echo "$output" | grep -qE "^PASS:"; then
-        echo -e "${GREEN}PASS${NC}"
-        PASS=$((PASS + 1))
-    elif echo "$output" | grep -qE "^SKIP:"; then
+    if echo "$output" | grep -qE "^SKIP:"; then
         echo -e "${YELLOW}SKIP${NC}"
-    else
+    elif echo "$output" | grep -qE "^FAIL:"; then
         echo -e "${RED}FAIL${NC}"
         FAIL=$((FAIL + 1))
         FAILURES+=("$label ($file)")
+    else
+        echo -e "${GREEN}PASS${NC}"
+        PASS=$((PASS + 1))
     fi
 }
 

@@ -114,9 +114,26 @@ Factors are only computed and stored for dates that appear in the HDB or the cur
 
 ---
 
+## Monitoring Dashboard
+
+- **No authentication.** The Flask dashboard binds to `0.0.0.0` by default and has no login or access control. Do not expose it on a public network without a reverse proxy or firewall.
+- **Development server only.** `bin/monitor` runs Flask's built-in development server (single-threaded, not production-hardened). For production use, put it behind gunicorn or a similar WSGI server.
+- **Read-only.** The dashboard cannot submit, retry, or modify any data. All writes go through `bin/backfill`.
+- **q subprocess overhead.** HDB queries spawn a short-lived q process per request (cached for 3 seconds). Under high polling rates this can accumulate process spawns.
+
+---
+
+## Trading Calendar
+
+- **NYSE only (2015–2030).** The holiday calendar is hardcoded in `orchestrator.py` for NYSE trading days from 2015 through 2030. Dates outside this range will treat all weekdays as trading days — no holidays will be skipped, potentially resulting in empty-data API calls on US holidays.
+- **No non-US exchange calendars.** The `_EXCHANGE_CALENDARS` dict maps all tested dataset prefixes (XNAS, XNYS, IEXG, EQUS) to the NYSE calendar. Non-US exchanges (LSE, XETR, etc.) would need their own holiday sets added to `orchestrator.py`.
+
+---
+
 ## Not Supported
 
 - Real-time or streaming data ingestion — batch only
 - Non-equity asset classes (futures, options, FX) — untested
 - Databento streaming API — not used
 - Windows — shell scripts are bash only; use WSL on Windows
+- Python `fcntl.flock` is not available on native Windows (WSL works); the q-level `mkdir` lock is POSIX-only

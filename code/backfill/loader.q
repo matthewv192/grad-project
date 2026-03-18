@@ -15,7 +15,8 @@
 
 // Logger: define a plain fallback if TorQ's .lg namespace isn't already loaded.
 if[not `lg in key `.;
-    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}
+    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;};
+    .lg.e:{[proc;msg] -1 (string .z.p)," [ERROR][",string[proc],"] ",msg;}
  ];
 
 \l schema/schema.q
@@ -184,10 +185,11 @@ readOhlcvCSV:{[csvPath]
 // Reads only the exchange column file for efficiency.
 checkExchangeLoaded:{[partDateDir;tableName;exchange]
     if[not tableName in key partDateDir; :0b];
-    exFile:` sv partDateDir,tableName,`exchange;
     if[not `exchange in key ` sv partDateDir,tableName; :0b];   // pre-schema partition without exchange col
-    // .Q.dpft enumerates ALL symbol columns; unenumerate before comparing
-    exchange in `$string get exFile
+    exFile:` sv partDateDir,tableName,`exchange;
+    // .Q.dpft enumerates ALL symbol columns; unenumerate before comparing.
+    // Protected eval: get can fail if sym enumeration file is missing or corrupt.
+    .[{[exch;ef] exch in `$string get ef};(exchange;exFile);{[e] 0b}]
  };
 
 // ---------------------------------------------------------------------------
@@ -433,7 +435,6 @@ loadChunkBatch:{[manifests]
         rowCount:m`row_count;
         dataset:m`exchange;
 
-        updateJobRecord[chunkId; `loaded; ""];
         updateJobRecord[chunkId; `verified; ""];
         
         if[count times; @[updateJobRecordTimestamps; (chunkId; min times; max times); {[e] }]];

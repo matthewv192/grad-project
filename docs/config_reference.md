@@ -70,6 +70,33 @@ Backoff: `min(2^retries, 60)` seconds between attempts (1s, 2s, 4s, …, capped 
 | `STAGING_DIR` | `STAGING_DIR` | `<package>/staging` | Root for downloaded CSVs, manifests, and job store |
 | `HDB_DIR` | `KDBHDB` | `<package>/hdb` | kdb+ HDB root directory |
 | `JOB_METADATA_DIR` | — | `<staging>/metadata` | Job store and manifest location |
+| `QCMD` | `QCMD` | `q` | q executable path (override if `q` is not on `PATH`) |
+
+## Monitoring Dashboard
+
+| Setting | Env var | Default | Description |
+|---|---|---|---|
+| Monitor port | `MONITOR_PORT` | `8080` | Port for the Flask monitoring dashboard (`bin/monitor`) |
+
+The dashboard exposes JSON API endpoints for integration with external tools:
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/jobs?request_id=...` | All jobs grouped by request_id (optional filter) |
+| `GET /api/metrics` | List all request_ids with metrics |
+| `GET /api/metrics/<request_id>` | Per-chunk + summary metrics for one request |
+| `GET /api/failures?request_id=...` | Failures grouped by type (optional filter) |
+| `GET /api/hdb/partitions` | All HDB partitions with row counts |
+| `GET /api/hdb/partition/<date>?table=trades` | Per-symbol detail for one partition |
+| `GET /api/hdb/coverage?table=trades&start=...&end=...` | Symbol × date coverage matrix |
+| `GET /api/disk` | Directory sizes for staging, hdb, and logs |
+
+## Test Configuration
+
+| Setting | Env var | Default | Description |
+|---|---|---|---|
+| Integration test date | `INTEGRATION_TEST_DATE` | auto-discovered | Pin the integration test to a specific partition date (YYYY-MM-DD) |
+| Integration test symbol | `INTEGRATION_TEST_SYM` | auto-discovered | Pin the integration test to a specific symbol |
 
 ---
 
@@ -99,7 +126,7 @@ Redirect stdout to `logs/` if you also want console output captured:
 | `--end` | Yes | End date `YYYY-MM-DD` (inclusive) |
 | `--schema` | No | `trades` or `ohlcv-1m` (default: `trades`) |
 | `--dataset` | No | Databento dataset identifier (default: `XNAS.ITCH`). The dataset name is stored as the `exchange` column in the HDB. |
-| `--chunk-size` | No | Symbols per Databento batch job (default: 10). Larger values reduce API round-trips; smaller values give finer retry granularity. |
+| `--chunk-size` | No | Symbols per Databento batch job (default: 20). Larger values reduce API round-trips; smaller values give finer retry granularity. |
 | `--workers` | No | Parallel chunk workers (default: `12`). Each worker runs the full submit→poll→download pipeline for one chunk concurrently. |
 | `--request-id` | No | Override auto-generated ID. If a record already exists with different parameters the run aborts; matching parameters are treated as an idempotent resume. |
 | `--retry-failed` | No | Only retry `failed` chunks from the job store |

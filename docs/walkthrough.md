@@ -53,7 +53,7 @@ Single source of truth for every table. All q scripts load this first — centra
 
 **Chunking:** Split into chunks of `chunk_size` symbols × 1 trading day (default: 20). Weekends and NYSE holidays (2015–2030) are skipped automatically — no API calls for non-trading days. 50 symbols × 20 trading days in a month ≈ 50 chunks. Each maps to one Databento batch job — a failure only affects that day/batch. The trading calendar is pluggable per dataset prefix via `_EXCHANGE_CALENDARS`.
 
-**Job store:** Every chunk has a `JobRecord` in a kdb binary table at `staging/metadata/backfill_jobs`, tracking `pending → submitted → running → downloaded → loaded → verified`. State is written before each action so a crash leaves a recoverable record. Managed by `KdbJobStore` via a q subprocess running `jobstore.q`.
+**Job store:** Every chunk has a `JobRecord` in a kdb binary table at `staging/metadata/backfill_jobs`, tracking `pending → submitted → running → downloaded → loaded → verified`. State is written before each action so a crash leaves a recoverable record. Managed by `JobStore` via a q subprocess running `jobstore.q`.
 
 **Per-chunk pipeline:** cost estimate → submit → poll → download → SHA-256 checksum → write manifest → mark loaded. Non-trading days (weekends/holidays) are filtered before chunking. Chunks already in `loaded` or `verified` status are skipped without re-querying Databento.
 
@@ -92,7 +92,7 @@ Three checks before every write: duplicate natural keys, time ordering, nulls in
 ./scripts/run_tests.sh
 ```
 
-8 q tests (schema, manifest, loader, quality, symbology, ref tables, adj, integration) and 208 Python tests across `test_orchestrator.py`, `test_metrics.py`, and `test_ref_ingest.py`. The integration test auto-discovers the most recent HDB partition and runs live queries against it. The ref_ingest tests include 5 live yfinance smoke tests that verify the API still returns data in the expected format.
+8 q tests (schema, manifest, loader, quality, symbology, ref tables, adj, integration) and 212 Python tests across `test_orchestrator.py`, `test_metrics.py`, and `test_ref_ingest.py`. The integration test auto-discovers the most recent HDB partition and runs live queries against it. The ref_ingest tests include 5 live yfinance smoke tests that verify the API still returns data in the expected format.
 
 ---
 
@@ -187,7 +187,7 @@ Midway through the project a formal gap analysis was run — the original requir
 
 1. **`ref_corp_actions` not append-only.** The requirements specified point-in-time correctness for reference data (a backtest in January should only use factors available in January). The table was being overwritten on each ingest. Fix: switched to append-only with a `loaded_at` timestamp on every row, matching the approach already used for `ref_adj_factors`.
 
-2. **Job store still using JSON files.** The requirements specified a kdb binary table for job tracking. The implementation had `backfill_jobs` defined in `schema.q` but the actual store was writing one JSON file per chunk to `staging/metadata/jobs/`. Fix: `jobstore.q` was written to manage the kdb binary table; Python's `JobStore` was replaced with `KdbJobStore`.
+2. **Job store still using JSON files.** The requirements specified a kdb binary table for job tracking. The implementation had `backfill_jobs` defined in `schema.q` but the actual store was writing one JSON file per chunk to `staging/metadata/jobs/`. Fix: `jobstore.q` was written to manage the kdb binary table; Python's `JobStore` was replaced with `JobStore`.
 
 The audit approach — treating it as a formal gap analysis rather than "does it seem to work" — surfaced issues that would have been invisible in normal testing.
 
@@ -201,7 +201,7 @@ Claude consistently deferred to explicit direction on architectural choices:
 - **`exchange` column from M0** — Claude's initial schema draft omitted it. Adding it retroactively would have required migrating all existing partitions.
 - **Idempotency as a requirement** — Claude's M1 draft assumed a clean run. The job store, checksum verification, and HDB pre-flight check were specified as non-negotiable from the start.
 - **Scope control** — Claude periodically suggested additions: a monitoring dashboard, a REST API for job status, a database-backed configuration system. Each was declined in favour of a well-understood, maintainable pipeline.
-- **Chunk size** — the initial implementation used 1 symbol per chunk for maximum retry granularity. After reviewing the Databento API overhead per job, this was revised to a default of 10 symbols per chunk, reducing API round-trips by ~10x for typical runs while keeping retry granularity acceptable.
+- **Chunk size** — the initial implementation used 1 symbol per chunk for maximum retry granularity. After reviewing the Databento API overhead per job, this was revised to a default of 20 symbols per chunk, reducing API round-trips while keeping retry granularity acceptable.
 
 ---
 
@@ -216,3 +216,9 @@ Using Claude effectively in this project required:
 5. **Persistent context management** — SKILL.md and session memory kept behaviour consistent across many sessions rather than drifting back to defaults
 
 The AI substantially accelerated boilerplate, test generation, documentation, and iterative bug-fixing. Architectural decisions and correctness of the kdb+ partition logic were human-directed throughout.
+
+---
+
+## 5. Possible Extensions
+
+- **Multi-exchange trading calendars** — The NYSE holiday calendar is currently inlined in `orchestrator.py` (~160 lines). To support non-US exchanges (LSE, XETR, Euronext, etc.), extract all holiday sets into a single `config/exchange_holidays.json` keyed by calendar name (e.g. `"NYSE"`, `"LSE"`, `"XETR"`). The existing `_EXCHANGE_CALENDARS` prefix map would point each Databento dataset prefix to its calendar key via a dict lookup — no branching logic needed. Adding a new exchange would be a data-only change: append dates to the JSON file and add one line to the prefix map.

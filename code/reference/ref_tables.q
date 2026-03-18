@@ -10,7 +10,8 @@
 system "l ",$[count s:getenv`PACKAGEHOME;s,"/schema/schema.q";"schema/schema.q"];
 
 if[not `lg in key `.;
-    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;}
+    .lg.o:{[proc;msg] -1 (string .z.p)," [",string[proc],"] ",msg;};
+    .lg.e:{[proc;msg] -1 (string .z.p)," [ERROR][",string[proc],"] ",msg;}
  ];
 
 REF_DIR:hsym`$$[count s:getenv`STAGING_DIR;s;"staging"],"/reference";

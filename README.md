@@ -122,7 +122,8 @@ grad-project/
 ├── setenv.sh               # Set TORQHOME, PACKAGEHOME, KDBHDB, STAGING_DIR
 ├── pyproject.toml          # Python deps: databento, pandas, pyarrow
 ├── bin/
-│   └── backfill            # Main entrypoint: sources env, activates venv, calls orchestrator
+│   ├── backfill            # Main entrypoint: sources env, activates venv, calls orchestrator
+│   └── monitor             # Monitoring dashboard: sources env, activates venv, launches Flask app
 ├── config/
 │   ├── settings.q          # All configurable parameters
 │   └── process.csv         # TorQ process definitions (hdb:6010, loader:6011)
@@ -137,8 +138,13 @@ grad-project/
 │   ├── reference/
 │   │   ├── ref_ingest.py   # Fetch corp actions/dividends via yfinance; compute adj factors
 │   │   └── ref_tables.q    # Load reference CSVs into in-memory q tables
-│   └── adjlib/
-│       └── adjlib.q        # Price/volume adjustment library (backward/forward, PIT asOf)
+│   ├── adjlib/
+│   │   └── adjlib.q        # Price/volume adjustment library (backward/forward, PIT asOf)
+│   └── monitor/
+│       ├── app.py          # Flask monitoring dashboard (read-only, all API routes)
+│       ├── hdb_query.py    # q subprocess wrappers for HDB inspection
+│       └── templates/
+│           └── index.html  # Single-page dashboard (Bootstrap 5, Chart.js)
 ├── schema/
 │   └── schema.q            # All table schemas (trades, ohlcv_1m, backfill_jobs, ref_*)
 ├── scripts/
@@ -196,6 +202,7 @@ grad-project/
 - **Symbology map** — `staging/reference/symbology_map.csv` accumulates `(sym, instrument_id, exchange)` pairs across all loads, validated during each load.
 - **UTC enforcement** — The q loader subprocess always runs with `TZ=UTC` set, preventing timestamp corruption on non-UTC hosts.
 - **Metrics continuity** — A stub metrics record is written at chunk start, so a mid-run crash never leaves a gap in `staging/metrics/`.
+- **Monitoring dashboard** — `bin/monitor` launches a read-only web dashboard (Flask, port 8080) showing live job status, per-chunk timing charts, failure breakdown, HDB coverage heatmap, and disk usage.
 
 ---
 

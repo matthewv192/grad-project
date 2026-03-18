@@ -251,7 +251,7 @@ def _from_kdb_ts(kdb_str: str) -> str:
         return kdb_str
 
 
-class KdbJobStore:
+class JobStore:
     """
     kdb-backed persistent job store with write batching.
 
@@ -276,6 +276,7 @@ class KdbJobStore:
         if package_home is None:
             package_home = PACKAGE_HOME
         self.jobs_file = staging_dir / "metadata" / "backfill_jobs"
+        self._progress_file = staging_dir / "metadata" / ".progress.json"
         self.package_home = package_home
         self._lock = threading.Lock()
         self.jobs_file.parent.mkdir(parents=True, exist_ok=True)
@@ -379,6 +380,46 @@ class KdbJobStore:
             self._dirty[record.chunk_id] = self._record_to_dict(record)
             if len(self._dirty) >= self._FLUSH_THRESHOLD:
                 self.flush()
+            self._write_progress()
+
+    def _write_progress(self) -> None:
+        """Write a lightweight JSON snapshot of the in-memory cache to disk.
+
+        Called on every save() so the monitoring dashboard can read live
+        status transitions without waiting for the kdb flush.  Atomic
+        via tmp + rename.  Best-effort: failures are silently ignored.
+        """
+        try:
+            snapshot = [r.to_dict() for r in self._cache.values()]
+            tmp = self._progress_file.with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(snapshot, f, default=str)
+            tmp.rename(self._progress_file)
+        except Exception:
+            pass
+
+    def clear_progress(self) -> None:
+        """Remove the progress file after a run completes and the kdb store is flushed.
+
+        The dashboard falls back to reading the kdb job store when this file
+        is absent, which is the correct behaviour between runs.
+        """
+        try:
+            self._progress_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    def read_progress(staging_dir: Path) -> list[dict] | None:
+        """Read the live progress file if it exists.  Returns None if absent."""
+        p = staging_dir / "metadata" / ".progress.json"
+        if not p.exists():
+            return None
+        try:
+            with open(p) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def load(self, chunk_id: str) -> "JobRecord | None":
         with self._lock:
@@ -396,9 +437,6 @@ class KdbJobStore:
             return [r for r in self._cache.values()
                     if r.status == "failed" and r.retries < MAX_RETRIES]
 
-
-# Keep backward-compatible name
-JobStore = KdbJobStore
 
 
 # ---------------------------------------------------------------------------
@@ -878,7 +916,7 @@ def write_manifest(request_id: str, chunk_id: str, job_id: str, schema: str,
     return manifest
 
 
-def _cleanup_staging_csvs(job_store: "KdbJobStore", staging_dir: Path,
+def _cleanup_staging_csvs(job_store: "JobStore", staging_dir: Path,
                           request_id: str | None = None) -> int:
     """Remove CSV directories for chunks that reached 'verified' status.
 
@@ -1629,12 +1667,7 @@ def print_gaps(hdb_dir: Path, symbols: list[str], start: date, end: date,
 
 def _date_range(start: date, end: date) -> list[date]:
     """Return a list of dates from start to end inclusive."""
-    result = []
-    d = start
-    while d <= end:
-        result.append(d)
-        d += timedelta(days=1)
-    return result
+    return [start + timedelta(days=i) for i in range((end - start).days + 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -1776,6 +1809,7 @@ def main(argv=None) -> None:
                              manifest_dir,
                              max_workers=args.workers, backoffs=backoffs)
         job_store.flush()
+        job_store.clear_progress()
 
         if not skip_load:
             try:
@@ -1820,8 +1854,8 @@ def main(argv=None) -> None:
         if existing:
             existing_dates = sorted({r.date for r in existing})
             existing_syms  = sorted({s for r in existing for s in r.symbols})
-            new_dates = sorted({(start + timedelta(days=i)).isoformat()
-                                for i in range((end - start).days + 1)})
+            new_dates = sorted(d.isoformat()
+                                for d in trading_days(start, end, args.dataset))
             new_syms = sorted(symbols)
             if existing_dates != new_dates or existing_syms != new_syms:
                 log.error(
@@ -1869,15 +1903,28 @@ def main(argv=None) -> None:
 
     # ---- Dry run: cost estimate and chunk plan ----
     if args.dry_run:
-        total_cost = 0.0
         print(f"\nChunk plan for {request_id}:")
         print(f"  {'chunk_id':<50} {'symbols':>7} {'est_cost':>10}")
         print(f"  {'-'*70}")
-        for chunk in chunks:
+
+        # Estimate costs in parallel (up to 10 concurrent via _API_SEMAPHORE)
+        def _estimate_one(chunk: Chunk) -> tuple[Chunk, float]:
             end_date = (chunk.date + timedelta(days=1)).isoformat()
-            cost = estimate_cost(client, chunk.dataset, chunk.symbols,
-                                 chunk.schema,
-                                 chunk.date.isoformat(), end_date)
+            return chunk, estimate_cost(client, chunk.dataset, chunk.symbols,
+                                        chunk.schema,
+                                        chunk.date.isoformat(), end_date)
+
+        results: list[tuple[Chunk, float]] = []
+        with ThreadPoolExecutor(max_workers=min(args.workers, len(chunks))) as executor:
+            futures = {executor.submit(_estimate_one, c): c for c in chunks}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        # Print in original chunk order
+        cost_by_id = {c.chunk_id: cost for c, cost in results}
+        total_cost = 0.0
+        for chunk in chunks:
+            cost = cost_by_id[chunk.chunk_id]
             total_cost += cost
             print(f"  {chunk.chunk_id:<50} {len(chunk.symbols):>7} ${cost:>9.4f}")
         print(f"\n  Total: {len(chunks)} chunk(s), estimated ${total_cost:.4f}")
@@ -1893,6 +1940,7 @@ def main(argv=None) -> None:
     )
     _wall_s = time.time() - _wall_start
     job_store.flush()
+    job_store.clear_progress()
 
     log.info(f"Chunks complete: {succeeded} succeeded, {failed} failed")
 

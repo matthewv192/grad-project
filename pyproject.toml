@@ -20,6 +20,8 @@ dependencies = [
     # Used by ref_ingest.py to compute adjustment factors aligned to the
     # backfill date range.
     "yfinance>=0.2.0",
+    # Lightweight web framework for the monitoring dashboard (code/monitor/).
+    "flask>=3.0.0",
 ]
 
 [project.optional-dependencies]
