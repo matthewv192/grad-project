@@ -108,7 +108,7 @@ Partitioned by `date`, splayed tables sorted by `` `sym`time `` within each part
 
 | Component | Responsibility |
 |---|---|
-| `app.py` | Read-only Flask web dashboard (default port 8080, override via `MONITOR_PORT`). Serves JSON API endpoints for jobs, metrics, failures, HDB coverage, and disk usage. Uses a 3-second TTL cache to avoid spawning q subprocesses on every poll. |
+| `app.py` | Flask web dashboard (default port 8080, override via `MONITOR_PORT`). Serves JSON API endpoints for jobs, metrics, failures, HDB coverage, and disk usage. Can also submit new backfill requests, cancel running jobs, and retry failed chunks. Uses a 3-second TTL cache to avoid spawning q subprocesses on every poll. |
 | `hdb_query.py` | Spawns short-lived q subprocesses for HDB inspection: `list_partitions()`, `partition_detail()`, `coverage_matrix()`. Each query has a 30-second timeout. |
 | `templates/index.html` | Single-page dashboard (Bootstrap 5, Chart.js) with five tabs: Jobs, Metrics, Failures, HDB Coverage, Disk. Auto-refreshes at tab-specific intervals. |
 

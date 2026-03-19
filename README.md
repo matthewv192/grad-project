@@ -202,7 +202,7 @@ grad-project/
 - **Symbology map** — `staging/reference/symbology_map.csv` accumulates `(sym, instrument_id, exchange)` pairs across all loads, validated during each load.
 - **UTC enforcement** — The q loader subprocess always runs with `TZ=UTC` set, preventing timestamp corruption on non-UTC hosts.
 - **Metrics continuity** — A stub metrics record is written at chunk start, so a mid-run crash never leaves a gap in `staging/metrics/`.
-- **Monitoring dashboard** — `bin/monitor` launches a read-only web dashboard (Flask, port 8080) showing live job status, per-chunk timing charts, failure breakdown, HDB coverage heatmap, and disk usage.
+- **Monitoring dashboard** — `bin/monitor` launches a web dashboard (Flask, port 8080) showing live job status, per-chunk timing charts, failure breakdown, HDB coverage heatmap, and disk usage. Can also submit new backfill requests, cancel running jobs, and retry failed chunks.
 
 ---
 

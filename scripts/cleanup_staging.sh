@@ -18,7 +18,7 @@ STAGING_DIR="${STAGING_DIR:-$PACKAGE_DIR/staging}"
 LOG_DIR="${LOG_DIR:-$PACKAGE_DIR/logs}"
 
 # Retention periods (days).  Override via env vars.
-STAGING_DAYS="${STAGING_DAYS:-7}"
+STAGING_DAYS="${STAGING_DAYS:-3}"
 LOG_DAYS="${LOG_DAYS:-30}"
 
 echo "=== Staging / log cleanup ==="

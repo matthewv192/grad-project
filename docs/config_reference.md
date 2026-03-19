@@ -90,6 +90,27 @@ The dashboard exposes JSON API endpoints for integration with external tools:
 | `GET /api/hdb/partition/<date>?table=trades` | Per-symbol detail for one partition |
 | `GET /api/hdb/coverage?table=trades&start=...&end=...` | Symbol × date coverage matrix |
 | `GET /api/disk` | Directory sizes for staging, hdb, and logs |
+| `GET /api/hdb/ohlcv?symbols=...&start=...&end=...&adjusted=true` | Daily OHLCV data for charting (optionally adjusted) |
+| `POST /api/backfill/dry-run` | Estimate cost for a backfill request without submitting |
+| `POST /api/backfill/submit` | Submit a new backfill request |
+| `POST /api/backfill/cancel` | Cancel a running backfill |
+| `POST /api/backfill/retry` | Retry failed chunks for a request |
+| `GET /api/backfill/log?request_id=...` | Stream log output for a running backfill |
+
+## Staging Cleanup
+
+The cleanup script (`scripts/cleanup_staging.sh`) removes old staging data and rotated log files. It is safe to run during an active backfill — it only removes data older than the retention window.
+
+| Setting | Env var | Default | Description |
+|---|---|---|---|
+| Staging retention | `STAGING_DAYS` | `3` | Remove staging chunk directories older than this many days |
+| Log retention | `LOG_DAYS` | `30` | Remove log files older than this many days |
+
+A cron job is recommended for automated cleanup:
+
+```bash
+0 3 * * * /path/to/grad-project/scripts/cleanup_staging.sh >> /path/to/grad-project/logs/cleanup.log 2>&1
+```
 
 ## Test Configuration
 

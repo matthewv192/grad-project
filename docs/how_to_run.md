@@ -456,18 +456,18 @@ but failed or abandoned runs leave data behind. The cleanup script removes
 staging chunk directories and old log files:
 
 ```bash
-# Default: remove staging dirs older than 7 days, logs older than 30 days
+# Default: remove staging dirs older than 3 days, logs older than 30 days
 ./scripts/cleanup_staging.sh
 
 # Custom retention
-STAGING_DAYS=3 LOG_DAYS=14 ./scripts/cleanup_staging.sh
+STAGING_DAYS=1 LOG_DAYS=14 ./scripts/cleanup_staging.sh
 ```
 
 For automated cleanup, add a cron entry:
 
 ```bash
-# Run daily at 02:00 — adjust paths to your installation
-0 2 * * * cd /path/to/grad-project && ./scripts/cleanup_staging.sh >> logs/cleanup.log 2>&1
+# Run daily at 03:00 — adjust paths to your installation
+0 3 * * * /path/to/grad-project/scripts/cleanup_staging.sh >> /path/to/grad-project/logs/cleanup.log 2>&1
 ```
 
 ### Log rotation
@@ -480,7 +480,7 @@ period (default: 30 days).
 
 ### Monitoring dashboard
 
-A read-only web dashboard is available for monitoring pipeline status, HDB coverage, and disk usage without needing to run CLI commands.
+A web dashboard is available for monitoring pipeline status, submitting backfill requests, and inspecting HDB coverage without needing to run CLI commands.
 
 ```bash
 ./bin/monitor
@@ -503,7 +503,7 @@ The dashboard has five tabs:
 | **HDB Coverage** | Sym x date heatmap with row counts per cell. Select `trades` or `ohlcv_1m`. | On-demand (button) |
 | **Disk** | Size of `staging/`, `hdb/`, and `logs/` directories. | Every 30s |
 
-The dashboard is read-only — it does not submit, retry, or modify any data. It reads from the same files the CLI uses: the kdb job store, metrics JSONs, and HDB partitions. During an active backfill, the Jobs tab updates live as chunks progress through the pipeline.
+The dashboard can also submit new backfill requests (with dry-run cost estimation), cancel running jobs, and retry failed chunks. It reads from the same files the CLI uses: the kdb job store, metrics JSONs, and HDB partitions. During an active backfill, the Jobs tab updates live as chunks progress through the pipeline.
 
 ### Monitoring disk usage
 
