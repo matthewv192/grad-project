@@ -41,18 +41,18 @@ system "mkdir -p ",TEST_REF_DIR;
 
 // corp_actions.csv — 2 rows
 (hsym`$TEST_REF_DIR,"/corp_actions.csv") 0: (
-    "sym,action_type,ex_date,record_date,effective_date,factor,description";
-    "AAPL,split,2024-06-10,2024-06-09,2024-06-10,0.5,2-for-1 stock split";
-    "MSFT,dividend,2024-05-15,2024-05-14,2024-05-15,0.998,Quarterly dividend"
+    "sym,action_type,ex_date,record_date,effective_date,factor,description,loaded_at";
+    "AAPL,split,2024-06-10,2024-06-09,2024-06-10,0.5,2-for-1 stock split,2024.01.01T00:00:00.000000000";
+    "MSFT,dividend,2024-05-15,2024-05-14,2024-05-15,0.998,Quarterly dividend,2024.01.01T00:00:00.000000000"
  );
 
 // adj_factors.csv — 4 rows (two symbols, two dates each)
 (hsym`$TEST_REF_DIR,"/adj_factors.csv") 0: (
-    "sym,date,cumulative_factor,split_factor,dividend_factor";
-    "AAPL,2024-06-09,0.5,0.5,1.0";
-    "AAPL,2024-06-10,1.0,1.0,1.0";
-    "MSFT,2024-06-09,0.998,1.0,0.998";
-    "MSFT,2024-06-10,1.0,1.0,1.0"
+    "sym,date,cumulative_factor,split_factor,dividend_factor,loaded_at";
+    "AAPL,2024-06-09,0.5,0.5,1.0,2024.01.01T00:00:00.000000000";
+    "AAPL,2024-06-10,1.0,1.0,1.0,2024.01.01T00:00:00.000000000";
+    "MSFT,2024-06-09,0.998,1.0,0.998,2024.01.01T00:00:00.000000000";
+    "MSFT,2024-06-10,1.0,1.0,1.0,2024.01.01T00:00:00.000000000"
  );
 
 // ---------------------------------------------------------------------------
@@ -90,6 +90,7 @@ assertEq["corp_actions sym type";         type ref_corp_actions`sym;         11h
 assertEq["corp_actions action_type type"; type ref_corp_actions`action_type;  11h];
 assertEq["corp_actions ex_date type";     type ref_corp_actions`ex_date;      14h];
 assertEq["corp_actions factor type";      type ref_corp_actions`factor;        9h];
+assertEq["corp_actions loaded_at type";   type ref_corp_actions`loaded_at;    12h];
 
 // Spot-check values
 aaplFactor:exec first factor from ref_corp_actions where sym=`AAPL, action_type=`split;
@@ -107,6 +108,7 @@ assertEq["adj_factors row count"; n; 4j];
 assertEq["adj_factors sym type";               type ref_adj_factors`sym;               11h];
 assertEq["adj_factors date type";              type ref_adj_factors`date;              14h];
 assertEq["adj_factors cumulative_factor type"; type ref_adj_factors`cumulative_factor;  9h];
+assertEq["adj_factors loaded_at type";         type ref_adj_factors`loaded_at;          12h];
 
 preFactor:exec first cumulative_factor from ref_adj_factors where sym=`AAPL, date=2024.06.09;
 assertEq["AAPL pre-split cumulative_factor"; preFactor; 0.5f];

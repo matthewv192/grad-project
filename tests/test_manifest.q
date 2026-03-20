@@ -108,6 +108,65 @@ found:scanManifestDir`$"/tmp/grad_test_manifests";
 assertEq["scanManifestDir finds manifest"; 1<=count found; 1b];
 
 // ---------------------------------------------------------------------------
+// Test: readManifest falls back to "dataset" key (legacy manifests)
+//
+// Pre-multi-exchange manifests used the key "dataset" where current ones use
+// "exchange".  readManifest must accept both.
+// ---------------------------------------------------------------------------
+
+legacyManifest:()!();
+legacyManifest[`request_id]       :"req_test_legacy";
+legacyManifest[`chunk_id]         :"req_test_legacy_chunk000";
+legacyManifest[`databento_job_id] :"DBNJ-LEGACY1";
+legacyManifest[`dataset]          :"XNAS.ITCH";    // old key — no `exchange` present
+legacyManifest[`schema]           :"trades";
+legacyManifest[`date]             :"2024-01-15";
+legacyManifest[`symbols]          :enlist "AAPL";
+legacyManifest[`file_path]        :"/tmp/grad_test_chunk.csv";
+legacyManifest[`row_count]        :12345;
+legacyManifest[`checksum]         :"sha256:abc123";
+legacyManifest[`min_ts]           :"";
+legacyManifest[`max_ts]           :"";
+legacyManifest[`created_at]       :"2024-01-15T10:00:00+00:00";
+
+legacyManifestPath:"/tmp/grad_test_legacy_manifest.json";
+(hsym`$legacyManifestPath) 0: enlist .j.j legacyManifest;
+
+mLegacy:readManifest`$legacyManifestPath;
+assertEq["legacy dataset key parsed as exchange"; mLegacy`exchange; `$"XNAS.ITCH"];
+
+// Manifest with neither exchange nor dataset — should default to XNAS.ITCH
+minimalManifest:()!();
+minimalManifest[`request_id]       :"req_test_minimal";
+minimalManifest[`chunk_id]         :"req_test_minimal_chunk000";
+minimalManifest[`databento_job_id] :"DBNJ-MINIMAL1";
+// intentionally no `exchange` or `dataset` key
+minimalManifest[`schema]           :"trades";
+minimalManifest[`date]             :"2024-01-15";
+minimalManifest[`symbols]          :enlist "AAPL";
+minimalManifest[`file_path]        :"/tmp/grad_test_chunk.csv";
+minimalManifest[`row_count]        :12345;
+minimalManifest[`checksum]         :"sha256:abc123";
+minimalManifest[`min_ts]           :"";
+minimalManifest[`max_ts]           :"";
+minimalManifest[`created_at]       :"2024-01-15T10:00:00+00:00";
+
+minimalManifestPath:"/tmp/grad_test_minimal_manifest.json";
+(hsym`$minimalManifestPath) 0: enlist .j.j minimalManifest;
+
+// Missing exchange/dataset should now signal an error (no silent default)
+mMinimalErr:@[readManifest;`$minimalManifestPath;{[e] e}];
+assertEq["no exchange/dataset signals error"; mMinimalErr~"manifest missing exchange/dataset key"; 1b];
+
+// ---------------------------------------------------------------------------
+// Test: scanManifestDir on empty directory returns empty list
+// ---------------------------------------------------------------------------
+
+system "mkdir -p /tmp/grad_empty_manifests";
+emptyFound:scanManifestDir`$"/tmp/grad_empty_manifests";
+assertEq["empty dir returns 0 manifests"; count emptyFound; 0j];
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 

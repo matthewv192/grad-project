@@ -1,10 +1,11 @@
 #!/bin/bash
-# install_kdb.sh — install Python dependencies for the grad-project package.
+# setup_python.sh — install Python dependencies for the grad-project package.
 #
-# Usage:  ./install_kdb.sh
+# Usage:  ./scripts/setup_python.sh
 #
 # This script:
 #   1. Creates (or reuses) a Python virtual environment at ../venv
+#      (sibling to grad-project, e.g. ~/venv)
 #   2. Installs the package and its dependencies via pip
 #
 # kdb+ itself must be installed separately and available on PATH as 'q'.
@@ -13,7 +14,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/venv"
+PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_DIR="$(cd "$PACKAGE_DIR/.." && pwd)/venv"
 
 echo "=== grad-project installer ==="
 echo ""
@@ -32,12 +34,12 @@ source "$VENV_DIR/bin/activate"
 # 2. Install Python deps
 echo "[2/2] Installing Python dependencies..."
 pip install --upgrade pip --quiet
-pip install -e "$SCRIPT_DIR/" --quiet
+pip install -e "$PACKAGE_DIR/" --quiet
 
 echo ""
 echo "Installation complete."
 echo ""
 echo "Next steps:"
 echo "  1. export DATABENTO_API_KEY=your-key-here"
-echo "  2. source $SCRIPT_DIR/setenv.sh"
-echo "  3. ./scripts/request_backfill.sh --symbols AAPL --start 2024-01-15 --end 2024-01-15 --dry-run"
+echo "  2. source $PACKAGE_DIR/setenv.sh"
+echo "  3. ./bin/backfill --symbols AAPL --start 2024-01-15 --end 2024-01-15 --dry-run"

@@ -1,0 +1,25 @@
+#!/bin/bash
+# bin/monitor — launch the backfill monitoring dashboard.
+#
+# Usage (from any directory):
+#   /path/to/grad-project/bin/monitor              # default port 8080
+#   MONITOR_PORT=9090 /path/to/grad-project/bin/monitor
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV="$PROJECT_DIR/../venv"
+
+# Load environment (sets PACKAGEHOME, KDBHDB, STAGING_DIR, etc.)
+source "$PROJECT_DIR/setenv.sh"
+
+# Activate Python venv
+if [[ -f "$VENV/bin/activate" ]]; then
+    source "$VENV/bin/activate"
+else
+    echo "ERROR: Python venv not found at $VENV — run scripts/setup_python.sh first" >&2
+    exit 1
+fi
+
+exec python "$PROJECT_DIR/code/monitor/app.py" "$@"

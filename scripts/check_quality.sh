@@ -35,8 +35,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$DATE" ]; then
-    echo "ERROR: --date is required"
-    echo "Usage: $0 --date YYYY-MM-DD [--table trades|ohlcv_1m]"
+    echo "ERROR: --date is required" >&2
+    echo "Usage: $0 --date YYYY-MM-DD [--table trades|ohlcv_1m]" >&2
     exit 1
 fi
 
@@ -45,9 +45,12 @@ echo "Running quality checks: table=$TABLE date=$DATE"
 export QUALITY_DATE="$DATE"
 export QUALITY_TABLE="$TABLE"
 
-# Load quality.q and run checkQualityScript[]; cwd=PACKAGEHOME so \l paths resolve
+# Load quality.q and run checkQualityScript[].
+# cd to PACKAGEHOME first so the relative \l path resolves regardless of
+# where the caller invoked this script from.
 Q_SCRIPT="\\l code/backfill/quality.q
 checkQualityScript[]
 exit 0"
 
+cd "$PACKAGE_DIR"
 echo "$Q_SCRIPT" | q -q

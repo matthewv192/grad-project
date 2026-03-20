@@ -23,14 +23,12 @@ assertEq:{[testName;actual;expected]
 
 assertEq["trades cols";
     cols trades;
-    `date`sym`time`instrument_id`exchange`price`size`side`conditions`sequence];
+    `date`time`sym`exchange`price`size`side`conditions`sequence`instrument_id];
 
-// Type chars: d=date s=symbol p=timestamp j=long s=symbol f=float j=long s=symbol s=symbol j=long
+// Type chars: d=date p=timestamp s=symbol s=symbol f=float j=long s=symbol s=symbol j=long j=long
 assertEq["trades types";
     {exec t from meta x} trades;
-    "dspjsfjssj"];
-
-assertEq["trades col count"; count cols trades; 10];
+    "dpssfjssjj"];
 
 // ---------------------------------------------------------------------------
 // ohlcv_1m
@@ -38,23 +36,20 @@ assertEq["trades col count"; count cols trades; 10];
 
 assertEq["ohlcv_1m cols";
     cols ohlcv_1m;
-    `date`sym`time`exchange`instrument_id`open`high`low`close`volume];
+    `date`time`sym`exchange`open`high`low`close`volume`instrument_id];
 
-// d=date s=symbol p=timestamp s=symbol j=long f=float x4 j=long
+// d=date p=timestamp s=symbol s=symbol f=float x4 j=long j=long
 assertEq["ohlcv_1m types";
     {exec t from meta x} ohlcv_1m;
-    "dspsjffffj"];
-
-assertEq["ohlcv_1m col count"; count cols ohlcv_1m; 10];
+    "dpssffffjj"];
 
 // ---------------------------------------------------------------------------
 // backfill_jobs
 // ---------------------------------------------------------------------------
 
-expectedJobCols:`request_id`chunk_id`databento_job_id`schema`symbols`start_date`end_date`status`retries`error_msg`file_path`checksum`row_count`min_ts`max_ts`created_at`updated_at;
+expectedJobCols:`request_id`chunk_id`databento_job_id`dataset`schema`symbols`date`status`retries`error_msg`failure_type`file_path`file_paths`checksum`row_count`min_ts`max_ts`created_at`updated_at;
 
 assertEq["backfill_jobs cols"; cols backfill_jobs; expectedJobCols];
-assertEq["backfill_jobs col count"; count cols backfill_jobs; 17];
 
 // ---------------------------------------------------------------------------
 // Reference tables
@@ -66,11 +61,11 @@ assertEq["ref_security_master cols";
 
 assertEq["ref_corp_actions cols";
     cols ref_corp_actions;
-    `sym`action_type`ex_date`record_date`effective_date`factor`description];
+    `sym`action_type`ex_date`record_date`effective_date`factor`description`loaded_at];
 
 assertEq["ref_adj_factors cols";
     cols ref_adj_factors;
-    `sym`date`cumulative_factor`split_factor`dividend_factor];
+    `sym`date`cumulative_factor`split_factor`dividend_factor`loaded_at];
 
 // ---------------------------------------------------------------------------
 // Report

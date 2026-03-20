@@ -1,0 +1,1246 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backfill Monitor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+        .nav-tabs .nav-link { color: #adb5bd; }
+        .nav-tabs .nav-link.active { color: #fff; background-color: #212529; border-color: #495057 #495057 #212529; }
+        .status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+        .status-verified  { background-color: #198754; color: #fff; }
+        .status-loaded    { background-color: #0d6efd; color: #fff; }
+        .status-downloaded{ background-color: #0dcaf0; color: #000; }
+        .status-running   { background-color: #ffc107; color: #000; }
+        .status-submitted { background-color: #6c757d; color: #fff; }
+        .status-pending   { background-color: #495057; color: #fff; }
+        .status-failed    { background-color: #dc3545; color: #fff; }
+        .progress-bar-segment { height: 8px; display: inline-block; }
+        .card-metric { text-align: center; }
+        .card-metric .value { font-size: 1.8rem; font-weight: 700; }
+        .card-metric .label { font-size: 0.8rem; color: #adb5bd; text-transform: uppercase; }
+        .coverage-cell { width: 60px; height: 30px; text-align: center; font-size: 0.7rem; border-radius: 3px; }
+        .coverage-present { background-color: #198754; color: #fff; }
+        .coverage-empty   { background-color: #343a40; color: #6c757d; }
+        table.table-sm td, table.table-sm th { padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+        .chunk-detail { display: none; }
+        .chunk-detail.show { display: table-row; }
+        .clickable { cursor: pointer; }
+        .last-update { font-size: 0.75rem; color: #6c757d; }
+        #timingChart { max-height: 500px; }
+        .disk-bar { height: 24px; border-radius: 4px; }
+        .toast-container { z-index: 1080; }
+        .form-label .form-hint { font-weight: 400; color: #6c757d; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark border-bottom border-secondary px-3">
+        <span class="navbar-brand mb-0 h1">Backfill Monitor</span>
+        <span class="last-update" id="lastUpdate"></span>
+    </nav>
+
+    <div class="container-fluid mt-3">
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link active" id="tab-jobs" data-bs-toggle="tab"
+                        data-bs-target="#pane-jobs" type="button" role="tab">Jobs</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-submit" data-bs-toggle="tab"
+                        data-bs-target="#pane-submit" type="button" role="tab">Submit</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-charts" data-bs-toggle="tab"
+                        data-bs-target="#pane-charts" type="button" role="tab">Charts</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-metrics" data-bs-toggle="tab"
+                        data-bs-target="#pane-metrics" type="button" role="tab">Metrics</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-failures" data-bs-toggle="tab"
+                        data-bs-target="#pane-failures" type="button" role="tab">Failures</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-hdb" data-bs-toggle="tab"
+                        data-bs-target="#pane-hdb" type="button" role="tab">HDB Coverage</button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="tab-disk" data-bs-toggle="tab"
+                        data-bs-target="#pane-disk" type="button" role="tab">Disk</button>
+            </li>
+        </ul>
+
+        <div class="tab-content mt-3" id="mainTabContent">
+
+            <!-- ============================================================ -->
+            <!-- JOBS TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade show active" id="pane-jobs" role="tabpanel">
+                <div id="jobs-content"><p class="text-muted">Loading...</p></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- CHARTS TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-charts" role="tabpanel">
+                <div class="card bg-dark border-secondary mb-3">
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span>OHLCV Data Explorer</span>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" id="chart-adjusted">
+                            <label class="form-check-label" for="chart-adjusted" style="font-size:0.85rem">Adjusted prices</label>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <!-- Request picker: auto-fills symbols + dates from existing jobs -->
+                        <div class="row g-2 mb-2 align-items-end">
+                            <div class="col">
+                                <label class="form-label form-label-sm mb-0">Load from request</label>
+                                <select id="chart-request-select" class="form-select form-select-sm"
+                                        onchange="onChartRequestSelect()">
+                                    <option value="">Select a completed request...</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="text-muted mb-2" style="font-size:0.75rem">Or enter manually:</div>
+                        <div class="row g-2 mb-3 align-items-end">
+                            <div class="col-auto">
+                                <label class="form-label form-label-sm mb-0">Symbols</label>
+                                <input type="text" id="chart-symbols" class="form-control form-control-sm"
+                                       placeholder="AAPL, MSFT" style="width:200px">
+                            </div>
+                            <div class="col-auto">
+                                <label class="form-label form-label-sm mb-0">Start</label>
+                                <input type="date" id="chart-start" class="form-control form-control-sm">
+                            </div>
+                            <div class="col-auto">
+                                <label class="form-label form-label-sm mb-0">End</label>
+                                <input type="date" id="chart-end" class="form-control form-control-sm">
+                            </div>
+                            <div class="col-auto">
+                                <button class="btn btn-sm btn-primary" id="chart-load-btn" onclick="loadChart()">Load</button>
+                            </div>
+                        </div>
+                        <div id="chart-plot" style="width:100%;height:60vh;min-height:400px"></div>
+                        <div id="chart-status" class="text-muted mt-1" style="font-size:0.8rem"></div>
+                    </div>
+                </div>
+                <div id="chart-table-wrapper"></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- METRICS TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-metrics" role="tabpanel">
+                <div class="row mb-3">
+                    <div class="col-auto">
+                        <select id="metrics-request-select" class="form-select form-select-sm">
+                            <option value="">Select a request...</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="metrics-summary" class="row g-3 mb-3"></div>
+                <div style="position:relative; max-height:500px;">
+                    <canvas id="timingChart"></canvas>
+                </div>
+                <div id="metrics-table" class="mt-3"></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- FAILURES TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-failures" role="tabpanel">
+                <div id="failures-content"><p class="text-muted">Loading...</p></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- HDB COVERAGE TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-hdb" role="tabpanel">
+                <div class="row mb-3 g-2 align-items-end">
+                    <div class="col-auto">
+                        <label class="form-label form-label-sm mb-0">Table</label>
+                        <select id="hdb-table" class="form-select form-select-sm">
+                            <option value="trades">trades</option>
+                            <option value="ohlcv_1m">ohlcv_1m</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-sm btn-outline-light" id="hdb-load-btn">Load Coverage</button>
+                    </div>
+                </div>
+                <div id="hdb-partitions" class="mb-4"></div>
+                <div id="hdb-coverage"></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- DISK TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-disk" role="tabpanel">
+                <div id="disk-content"><p class="text-muted">Loading...</p></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- SUBMIT TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-submit" role="tabpanel">
+                <!-- Running state banner (hidden by default) -->
+                <div id="submit-running" class="d-none">
+                    <div class="alert alert-warning d-flex align-items-center justify-content-between">
+                        <div>
+                            <strong>Backfill in progress</strong>
+                            <span id="submit-running-detail" class="ms-2"></span>
+                        </div>
+                        <button class="btn btn-sm btn-danger" onclick="cancelBackfill()">Cancel</button>
+                    </div>
+                    <div class="card bg-dark border-secondary mb-3">
+                        <div class="card-header">Log output</div>
+                        <div class="card-body p-2">
+                            <pre id="submit-log" class="mb-0 text-muted" style="max-height:300px;overflow-y:auto;font-size:0.8rem;white-space:pre-wrap"></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Completed banner (hidden by default) -->
+                <div id="submit-done" class="d-none"></div>
+
+                <!-- Submission form -->
+                <div id="submit-form-wrapper">
+                    <div class="card bg-dark border-secondary" style="max-width:700px">
+                        <div class="card-header">New Backfill Request</div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label">Symbols</label>
+                                <input type="text" id="bf-symbols" class="form-control form-control-sm"
+                                       placeholder="AAPL, MSFT, GOOG">
+                                <div class="form-text">Comma-separated ticker symbols (e.g. AAPL, MSFT). Max 500.</div>
+                            </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col">
+                                    <label class="form-label">Start Date</label>
+                                    <input type="date" id="bf-start" class="form-control form-control-sm">
+                                    <div class="form-text">First trading day to backfill (inclusive).</div>
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">End Date</label>
+                                    <input type="date" id="bf-end" class="form-control form-control-sm">
+                                    <div class="form-text">Last trading day (inclusive). Max 365-day range.</div>
+                                </div>
+                            </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col">
+                                    <label class="form-label">Dataset <span class="form-hint">— Databento exchange feed</span></label>
+                                    <select id="bf-dataset" class="form-select form-select-sm">
+                                        <option value="XNAS.ITCH" selected>XNAS.ITCH (NASDAQ)</option>
+                                        <option value="XNYS.PILLAR">XNYS.PILLAR (NYSE)</option>
+                                        <option value="IEXG.TOPS">IEXG.TOPS (IEX)</option>
+                                        <option value="EQUS.MINI">EQUS.MINI (US Equities Consolidated)</option>
+                                    </select>
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">Schema <span class="form-hint">— data granularity</span></label>
+                                    <select id="bf-schema" class="form-select form-select-sm">
+                                        <option value="trades" selected>trades (tick-level)</option>
+                                        <option value="ohlcv-1m">ohlcv-1m (1-minute bars)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col">
+                                    <label class="form-label">Chunk Size <span class="form-hint">— symbols per API job</span></label>
+                                    <input type="number" id="bf-chunk-size" class="form-control form-control-sm"
+                                           value="20" min="1" max="100">
+                                    <div class="form-text">Larger = fewer API calls but coarser retry granularity.</div>
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">Symbol Type <span class="form-hint">— how symbols are identified</span></label>
+                                    <select id="bf-stype" class="form-select form-select-sm">
+                                        <option value="raw_symbol" selected>raw_symbol (ticker, e.g. AAPL)</option>
+                                        <option value="instrument_id">instrument_id (Databento numeric ID)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Cost estimate result area -->
+                            <div id="bf-cost-result" class="d-none mb-3"></div>
+
+                            <!-- Buttons -->
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-outline-light btn-sm" id="bf-estimate-btn"
+                                        onclick="submitDryRun()">Estimate Cost</button>
+                                <button class="btn btn-primary btn-sm" id="bf-submit-btn"
+                                        onclick="submitBackfill()" disabled>Submit Backfill</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Toast container for cross-tab notifications -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="notify-toast" class="toast" role="alert" data-bs-delay="8000">
+            <div class="toast-header">
+                <strong class="me-auto" id="toast-title">Backfill Monitor</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toast-body"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // =====================================================================
+    // Global state
+    // =====================================================================
+    let refreshTimer = null;
+    let timingChart = null;
+
+    function updateTimestamp() {
+        document.getElementById('lastUpdate').textContent =
+            'Updated: ' + new Date().toLocaleTimeString();
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+    }
+
+    function statusBadge(status) {
+        return `<span class="status-badge status-${status}">${status}</span>`;
+    }
+
+    // =====================================================================
+    // Toast notifications (visible from any tab)
+    // =====================================================================
+    function showToast(title, body, variant) {
+        const el = document.getElementById('notify-toast');
+        const header = el.querySelector('.toast-header');
+        document.getElementById('toast-title').textContent = title;
+        document.getElementById('toast-body').innerHTML = body;
+        // Color the header based on variant
+        header.className = 'toast-header';
+        if (variant === 'success') header.classList.add('text-bg-success');
+        else if (variant === 'danger') header.classList.add('text-bg-danger');
+        else if (variant === 'warning') header.classList.add('text-bg-warning');
+        const toast = bootstrap.Toast.getOrCreateInstance(el);
+        toast.show();
+    }
+
+    // Background poller: checks backfill status every 5s from any tab
+    // and fires a toast when a running backfill finishes.
+    let _bgWasRunning = false;
+    let _bgPollTimer = null;
+
+    async function _bgPollBackfill() {
+        try {
+            const resp = await fetch('/api/backfill/status');
+            const data = await resp.json();
+            if (data.running) {
+                _bgWasRunning = true;
+            } else if (_bgWasRunning && data.return_code !== null) {
+                _bgWasRunning = false;
+                const ok = data.return_code === 0;
+                showToast(
+                    ok ? 'Backfill Complete' : 'Backfill Failed',
+                    ok ? 'All chunks finished successfully. Check the <a href="#" onclick="goToSubmitTab();return false" class="alert-link">Jobs</a> tab for details.'
+                       : `Backfill exited with code ${data.return_code}. Check <a href="#" onclick="goToSubmitTab();return false" class="alert-link">logs</a> for details.`,
+                    ok ? 'success' : 'danger'
+                );
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    // =====================================================================
+    // JOBS TAB
+    // =====================================================================
+    async function loadJobs() {
+        try {
+            const resp = await fetch('/api/jobs');
+            const data = await resp.json();
+            renderJobs(data);
+            updateTimestamp();
+        } catch (e) { console.error('loadJobs:', e); }
+    }
+
+    function goToSubmitTab() {
+        const tab = new bootstrap.Tab(document.getElementById('tab-submit'));
+        tab.show();
+    }
+
+    function renderJobs(requests) {
+        if (!requests.length) {
+            document.getElementById('jobs-content').innerHTML =
+                '<div class="text-center py-5">' +
+                '<p class="text-muted mb-2">No backfill jobs found.</p>' +
+                '<p class="text-muted mb-3">Submit a backfill request to start loading market data into the HDB.</p>' +
+                '<button class="btn btn-primary btn-sm" onclick="goToSubmitTab()">Go to Submit</button>' +
+                '</div>';
+            return;
+        }
+
+        const statusOrder = ['verified','loaded','downloaded','running','submitted','pending','failed'];
+        const statusColors = {
+            verified:'#198754', loaded:'#0d6efd', downloaded:'#0dcaf0',
+            running:'#ffc107', submitted:'#6c757d', pending:'#495057', failed:'#dc3545'
+        };
+        const statusLabels = {
+            verified:'Verified', loaded:'Loaded to HDB', downloaded:'Downloaded',
+            running:'Running', submitted:'Submitted to API', pending:'Pending', failed:'Failed'
+        };
+
+        // Status legend
+        let html = '<div class="mb-2 d-flex flex-wrap gap-2 align-items-center" style="font-size:0.8rem">';
+        for (const s of statusOrder) {
+            html += `<span class="d-inline-flex align-items-center gap-1">` +
+                `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${statusColors[s]}"></span>` +
+                `<span class="text-muted">${statusLabels[s]}</span></span>`;
+        }
+        html += '</div>';
+
+        html += '<table class="table table-dark table-sm table-hover">';
+        html += '<thead><tr>';
+        html += '<th>Request ID</th><th>Date Range</th><th>Last Updated</th><th>Symbols</th><th>Schema</th><th>Dataset</th><th>Chunks</th>';
+        html += '<th style="min-width:200px">Status</th>';
+        html += '<th>Verified</th><th>Failed</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const req of requests) {
+            const sc = req.status_counts;
+            const total = req.chunk_count;
+
+            // Progress bar
+            let bar = '<div class="d-flex" style="height:8px;border-radius:4px;overflow:hidden;">';
+            for (const s of statusOrder) {
+                const count = sc[s] || 0;
+                if (count > 0) {
+                    const pct = (count / total * 100).toFixed(1);
+                    bar += `<div style="width:${pct}%;background:${statusColors[s]}" title="${s}: ${count}"></div>`;
+                }
+            }
+            bar += '</div>';
+
+            const failCount = sc.failed || 0;
+            const verifiedCount = sc.verified || 0;
+
+            const syms = (req.symbols || []);
+            let symsDisplay = syms.slice(0, 5).join(', ');
+            if (syms.length > 5) symsDisplay += ` +${syms.length - 5}`;
+
+            // Date range from chunk dates
+            const dates = (req.date_range || {});
+            const dateRange = dates.start && dates.end
+                ? (dates.start === dates.end ? dates.start : `${dates.start} — ${dates.end}`)
+                : '';
+
+            // Last updated
+            const lastUpdated = req.last_updated || '';
+            const updatedDisplay = lastUpdated ? new Date(lastUpdated).toLocaleString() : '';
+
+            html += `<tr class="clickable" onclick="toggleChunks('${req.request_id}')">`;
+            html += `<td><code>${req.request_id}</code></td>`;
+            html += `<td>${dateRange}</td>`;
+            html += `<td>${updatedDisplay}</td>`;
+            html += `<td title="${syms.join(', ')}">${symsDisplay}</td>`;
+            html += `<td>${req.schema}</td>`;
+            html += `<td>${req.dataset}</td>`;
+            html += `<td>${total}</td>`;
+            html += `<td>${bar}</td>`;
+            html += `<td>${verifiedCount}</td>`;
+            html += `<td>${failCount > 0 ? '<span class="text-danger">' + failCount + '</span>' : '0'}</td>`;
+            html += '</tr>';
+
+            // Expandable chunk detail
+            html += `<tr class="chunk-detail" id="chunks-${req.request_id}"><td colspan="10">`;
+            html += '<table class="table table-dark table-sm mb-0">';
+            html += '<thead><tr><th>Chunk ID</th><th>Date</th><th>Symbols</th><th>Status</th><th>Rows</th><th>Error</th></tr></thead><tbody>';
+            for (const c of req.chunks) {
+                const syms = Array.isArray(c.symbols) ? c.symbols.join(', ') : (c.symbols || '');
+                const err = c.error_msg || '';
+                html += '<tr>';
+                html += `<td><code style="font-size:0.75rem">${c.chunk_id}</code></td>`;
+                html += `<td>${c.date || ''}</td>`;
+                html += `<td>${syms}</td>`;
+                html += `<td>${statusBadge(c.status)}</td>`;
+                html += `<td>${(c.row_count || 0).toLocaleString()}</td>`;
+                html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${err}">${err}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table></td></tr>';
+        }
+
+        html += '</tbody></table>';
+        document.getElementById('jobs-content').innerHTML = html;
+    }
+
+    function toggleChunks(reqId) {
+        const el = document.getElementById('chunks-' + reqId);
+        if (el) el.classList.toggle('show');
+    }
+
+    // =====================================================================
+    // METRICS TAB
+    // =====================================================================
+    async function loadMetricsList() {
+        try {
+            const resp = await fetch('/api/metrics');
+            const ids = await resp.json();
+            const sel = document.getElementById('metrics-request-select');
+            const current = sel.value;
+            sel.innerHTML = '<option value="">Select a request...</option>';
+            for (const id of ids) {
+                sel.innerHTML += `<option value="${id}" ${id === current ? 'selected' : ''}>${id}</option>`;
+            }
+        } catch (e) { console.error('loadMetricsList:', e); }
+    }
+
+    async function loadMetricsDetail(requestId) {
+        if (!requestId) {
+            document.getElementById('metrics-summary').innerHTML = '';
+            document.getElementById('metrics-table').innerHTML = '';
+            if (timingChart) { timingChart.destroy(); timingChart = null; }
+            return;
+        }
+        try {
+            const resp = await fetch(`/api/metrics/${requestId}`);
+            const data = await resp.json();
+            renderMetrics(data);
+        } catch (e) { console.error('loadMetricsDetail:', e); }
+    }
+
+    function renderMetrics(data) {
+        const { chunks, summary } = data;
+
+        // Summary cards
+        let cards = '';
+        if (summary) {
+            const items = [
+                { label: 'Chunks', value: summary.chunk_count },
+                { label: 'Total Rows', value: (summary.total_rows || 0).toLocaleString() },
+                { label: 'Loaded Rows', value: (summary.total_rows_loaded || 0).toLocaleString() },
+                { label: 'Wall Time', value: summary.wall_s != null ? summary.wall_s.toFixed(1) + 's' : '--' },
+                { label: 'Total Bytes', value: formatBytes(summary.total_bytes || 0) },
+                { label: 'Failed', value: summary.failed_chunk_count || 0 },
+            ];
+            for (const item of items) {
+                cards += `<div class="col-auto"><div class="card bg-dark border-secondary card-metric px-3 py-2">
+                    <div class="value">${item.value}</div><div class="label">${item.label}</div>
+                </div></div>`;
+            }
+        }
+        document.getElementById('metrics-summary').innerHTML = cards;
+
+        // Timing chart
+        if (timingChart) { timingChart.destroy(); timingChart = null; }
+        if (chunks && chunks.length) {
+            const ctx = document.getElementById('timingChart').getContext('2d');
+            const labels = chunks.map(c => {
+                const id = c.chunk_id || '';
+                return id.length > 25 ? '...' + id.slice(-22) : id;
+            });
+            timingChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Submit', data: chunks.map(c => c.submit_s || 0), backgroundColor: '#0d6efd' },
+                        { label: 'Poll',   data: chunks.map(c => c.poll_s || 0),   backgroundColor: '#ffc107' },
+                        { label: 'Download', data: chunks.map(c => c.download_s || 0), backgroundColor: '#198754' },
+                        { label: 'Load',   data: chunks.map(c => c.load_s || 0),   backgroundColor: '#dc3545' },
+                    ]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true, title: { display: true, text: 'Seconds', color: '#adb5bd' },
+                             ticks: { color: '#adb5bd' }, grid: { color: '#343a40' } },
+                        y: { stacked: true, ticks: { color: '#adb5bd', font: { size: 10 } },
+                             grid: { color: '#343a40' } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#adb5bd' } },
+                        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw.toFixed(2)}s` } }
+                    }
+                }
+            });
+        }
+
+        // Detail table
+        if (chunks && chunks.length) {
+            let html = '<table class="table table-dark table-sm">';
+            html += '<thead><tr><th>Chunk</th><th>Rows</th><th>Loaded</th><th>Total (s)</th>';
+            html += '<th>Submit</th><th>Poll</th><th>Download</th><th>Load</th></tr></thead><tbody>';
+            for (const c of chunks) {
+                html += '<tr>';
+                html += `<td><code style="font-size:0.75rem">${c.chunk_id || ''}</code></td>`;
+                html += `<td>${(c.row_count || 0).toLocaleString()}</td>`;
+                html += `<td>${(c.rows_loaded || 0).toLocaleString()}</td>`;
+                html += `<td>${(c.total_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.submit_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.poll_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.download_s || 0).toFixed(1)}</td>`;
+                html += `<td>${(c.load_s || 0).toFixed(1)}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            document.getElementById('metrics-table').innerHTML = html;
+        }
+    }
+
+    // =====================================================================
+    // FAILURES TAB
+    // =====================================================================
+    async function loadFailures() {
+        try {
+            const resp = await fetch('/api/failures');
+            const data = await resp.json();
+            renderFailures(data);
+            updateTimestamp();
+        } catch (e) { console.error('loadFailures:', e); }
+    }
+
+    function renderFailures(groups) {
+        if (!groups.length) {
+            document.getElementById('failures-content').innerHTML =
+                '<p class="text-success">No failed chunks.</p>';
+            return;
+        }
+
+        const totalFailed = groups.reduce((a, g) => a + g.count, 0);
+        let html = '<div class="d-flex align-items-center gap-3 mb-3">';
+        html += `<span class="text-muted">${totalFailed} failed chunk(s)</span>`;
+        html += '<button class="btn btn-warning btn-sm" id="retry-failed-btn" onclick="retryFailed()">Retry All Failed</button>';
+        html += '<span id="retry-status" class="text-muted" style="font-size:0.85rem"></span>';
+        html += '</div>';
+
+        for (const g of groups) {
+            html += `<h6 class="mt-3"><span class="status-badge status-failed">${g.failure_type}</span> (${g.count} chunk(s))</h6>`;
+            html += '<table class="table table-dark table-sm">';
+            html += '<thead><tr><th>Chunk ID</th><th>Date</th><th>Symbols</th><th>Retries</th><th>Error</th></tr></thead><tbody>';
+            for (const c of g.chunks) {
+                const syms = Array.isArray(c.symbols) ? c.symbols.slice(0, 3).join(', ') : '';
+                const extra = Array.isArray(c.symbols) && c.symbols.length > 3 ? ` +${c.symbols.length - 3}` : '';
+                html += '<tr>';
+                html += `<td><code style="font-size:0.75rem">${c.chunk_id || ''}</code></td>`;
+                html += `<td>${c.date || ''}</td>`;
+                html += `<td>${syms}${extra}</td>`;
+                html += `<td>${c.retries || 0}</td>`;
+                html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                            title="${(c.error_msg || '').replace(/"/g, '&quot;')}">${c.error_msg || ''}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        }
+        document.getElementById('failures-content').innerHTML = html;
+    }
+
+    async function retryFailed() {
+        const btn = document.getElementById('retry-failed-btn');
+        const status = document.getElementById('retry-status');
+        if (!confirm('Retry all failed chunks? This will call the Databento API and incur costs.')) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Starting retry...';
+        status.textContent = '';
+
+        try {
+            const resp = await fetch('/api/backfill/retry', { method: 'POST' });
+            const data = await resp.json();
+            if (data.ok) {
+                status.innerHTML = `<span class="text-success">Retry started (PID ${data.pid}). Switch to the <a href="#" onclick="goToSubmitTab();return false">Submit</a> tab to monitor progress.</span>`;
+                btn.textContent = 'Retry running...';
+            } else {
+                status.innerHTML = `<span class="text-danger">${data.error}</span>`;
+                btn.disabled = false;
+                btn.textContent = 'Retry All Failed';
+            }
+        } catch (e) {
+            status.innerHTML = '<span class="text-danger">Request failed — check server logs.</span>';
+            btn.disabled = false;
+            btn.textContent = 'Retry All Failed';
+        }
+    }
+
+    // =====================================================================
+    // HDB COVERAGE TAB
+    // =====================================================================
+    async function loadHdbCoverage() {
+        const table = document.getElementById('hdb-table').value;
+        document.getElementById('hdb-coverage').innerHTML = '<p class="text-muted">Loading HDB data (this may take a moment)...</p>';
+
+        try {
+            const resp = await fetch(`/api/hdb/coverage?table=${table}`);
+            const data = await resp.json();
+            renderCoverage(data, table);
+        } catch (e) {
+            document.getElementById('hdb-coverage').innerHTML = '<p class="text-danger">Failed to load HDB data.</p>';
+            console.error('loadHdbCoverage:', e);
+        }
+    }
+
+    function renderCoverage(data, table) {
+        if (!data.length) {
+            document.getElementById('hdb-coverage').innerHTML = '<p class="text-muted">No data found in HDB.</p>';
+            return;
+        }
+
+        // Pivot: data is [{sym, date, rows}, ...]
+        const syms = [...new Set(data.map(d => d.sym))].sort();
+        const dates = [...new Set(data.map(d => d.date))].sort();
+        const lookup = {};
+        let totalRows = 0;
+        for (const d of data) {
+            lookup[d.sym + '|' + d.date] = d.rows;
+            totalRows += d.rows;
+        }
+
+        let html = `<p class="text-muted mb-2">${table}: ${syms.length} symbol(s), ${dates.length} partition(s), ${totalRows.toLocaleString()} total rows</p>`;
+        html += '<div style="overflow-x:auto"><table class="table table-dark table-sm" style="font-size:0.8rem">';
+        html += '<thead><tr><th>Sym</th>';
+        for (const d of dates) {
+            html += `<th class="text-center" style="writing-mode:vertical-lr;transform:rotate(180deg);height:90px;font-size:0.7rem">${d}</th>`;
+        }
+        html += '<th class="text-end">Total</th></tr></thead><tbody>';
+
+        for (const sym of syms) {
+            html += `<tr><td><strong>${sym}</strong></td>`;
+            let symTotal = 0;
+            for (const d of dates) {
+                const rows = lookup[sym + '|' + d] || 0;
+                symTotal += rows;
+                if (rows > 0) {
+                    html += `<td class="text-center coverage-cell coverage-present" title="${sym} ${d}: ${rows.toLocaleString()}">${rows.toLocaleString()}</td>`;
+                } else {
+                    html += '<td class="text-center coverage-cell coverage-empty">-</td>';
+                }
+            }
+            html += `<td class="text-end">${symTotal.toLocaleString()}</td></tr>`;
+        }
+
+        // Totals row
+        html += '<tr class="border-top"><td><strong>Total</strong></td>';
+        for (const d of dates) {
+            const colTotal = data.filter(r => r.date === d).reduce((a, r) => a + r.rows, 0);
+            html += `<td class="text-center" style="font-size:0.7rem">${colTotal.toLocaleString()}</td>`;
+        }
+        html += `<td class="text-end"><strong>${totalRows.toLocaleString()}</strong></td></tr>`;
+
+        html += '</tbody></table></div>';
+        document.getElementById('hdb-coverage').innerHTML = html;
+    }
+
+    // =====================================================================
+    // DISK TAB
+    // =====================================================================
+    async function loadDisk() {
+        try {
+            const resp = await fetch('/api/disk');
+            const data = await resp.json();
+            renderDisk(data);
+            updateTimestamp();
+        } catch (e) { console.error('loadDisk:', e); }
+    }
+
+    function renderDisk(data) {
+        const colors = { staging: '#ffc107', hdb: '#0d6efd', logs: '#198754' };
+        const maxBytes = Math.max(...Object.values(data).map(d => d.bytes), 1);
+
+        let html = '<div class="row g-3">';
+        for (const [name, info] of Object.entries(data)) {
+            const pct = Math.max((info.bytes / maxBytes * 100), 1).toFixed(0);
+            html += `<div class="col-md-4">
+                <div class="card bg-dark border-secondary">
+                    <div class="card-body">
+                        <h6 class="card-title text-uppercase">${name}</h6>
+                        <div class="value mb-1" style="font-size:1.5rem;font-weight:700">${formatBytes(info.bytes)}</div>
+                        <div class="disk-bar" style="width:${pct}%;background:${colors[name] || '#6c757d'}"></div>
+                        <div class="text-muted mt-1" style="font-size:0.75rem">${info.path}</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+        document.getElementById('disk-content').innerHTML = html;
+    }
+
+    // =====================================================================
+    // CHARTS TAB
+    // =====================================================================
+    let _chartRequests = [];  // cached job data for the request picker
+
+    async function loadChartRequestList() {
+        try {
+            const resp = await fetch('/api/jobs');
+            const data = await resp.json();
+            _chartRequests = data;
+            const sel = document.getElementById('chart-request-select');
+            const current = sel.value;
+            sel.innerHTML = '<option value="">Select a completed request...</option>';
+            // Only show requests that have ohlcv data (schema contains ohlcv)
+            // or all requests (user might have both schemas)
+            for (const req of data) {
+                const syms = (req.symbols || []).slice(0, 5).join(', ');
+                const extra = (req.symbols || []).length > 5 ? ` +${req.symbols.length - 5}` : '';
+                const dr = req.date_range || {};
+                const dateStr = dr.start && dr.end ? `${dr.start} — ${dr.end}` : '';
+                const label = `${syms}${extra} | ${dateStr} | ${req.schema} (${req.dataset})`;
+                sel.innerHTML += `<option value="${req.request_id}" ${req.request_id === current ? 'selected' : ''}>${label}</option>`;
+            }
+        } catch (e) { console.error('loadChartRequestList:', e); }
+    }
+
+    function onChartRequestSelect() {
+        const reqId = document.getElementById('chart-request-select').value;
+        if (!reqId) return;
+        const req = _chartRequests.find(r => r.request_id === reqId);
+        if (!req) return;
+        // Fill in the form fields
+        document.getElementById('chart-symbols').value = (req.symbols || []).join(', ');
+        const dr = req.date_range || {};
+        if (dr.start) document.getElementById('chart-start').value = dr.start.replace(/\./g, '-');
+        if (dr.end) document.getElementById('chart-end').value = dr.end.replace(/\./g, '-');
+        // Auto-load
+        loadChart();
+    }
+
+    async function loadChart() {
+        const symbols = document.getElementById('chart-symbols').value.trim();
+        const start = document.getElementById('chart-start').value;
+        const end = document.getElementById('chart-end').value;
+        const adjusted = document.getElementById('chart-adjusted').checked;
+        const statusEl = document.getElementById('chart-status');
+        const btn = document.getElementById('chart-load-btn');
+
+        if (!symbols || !start || !end) {
+            statusEl.innerHTML = '<span class="text-danger">Select a request or fill in symbols and dates.</span>';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+        statusEl.textContent = adjusted ? 'Querying adjusted data (loading adjlib)...' : 'Querying raw data...';
+        document.getElementById('chart-table-wrapper').innerHTML = '';
+
+        try {
+            const params = new URLSearchParams({ symbols, start, end, adjusted });
+            const resp = await fetch('/api/hdb/ohlcv?' + params);
+            const result = await resp.json();
+
+            if (!result.ok) {
+                statusEl.innerHTML = `<span class="text-danger">Query error: ${result.error}</span>`;
+                Plotly.purge('chart-plot');
+                return;
+            }
+
+            if (!result.data || !result.data.length) {
+                statusEl.innerHTML = '<span class="text-warning">No ohlcv_1m data found for these symbols/dates. If this request used the "trades" schema, ohlcv_1m bars won\'t exist for it.</span>';
+                Plotly.purge('chart-plot');
+                return;
+            }
+
+            renderChart(result.data, adjusted);
+            renderChartTable(result.data, adjusted);
+            statusEl.textContent = `${result.data.length} 1-minute bar(s) loaded` + (adjusted ? ' (backward-adjusted)' : ' (raw/unadjusted)');
+        } catch (e) {
+            statusEl.innerHTML = '<span class="text-danger">Query failed — is q installed and the HDB accessible?</span>';
+            console.error('loadChart:', e);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Load';
+        }
+    }
+
+    function renderChart(data, adjusted) {
+        // Group by symbol
+        const bySymbol = {};
+        for (const row of data) {
+            if (!bySymbol[row.sym]) bySymbol[row.sym] = [];
+            bySymbol[row.sym].push(row);
+        }
+
+        const traces = [];
+        const colors = ['#0d6efd', '#198754', '#ffc107', '#dc3545', '#0dcaf0', '#6f42c1', '#fd7e14'];
+        let colorIdx = 0;
+
+        for (const [sym, rows] of Object.entries(bySymbol)) {
+            rows.sort((a, b) => a.time.localeCompare(b.time));
+            const times = rows.map(r => r.time);
+            const closeField = (adjusted && rows[0].adj_close !== undefined) ? 'adj_close' : 'close';
+            const color = colors[colorIdx % colors.length];
+
+            // Close price line
+            traces.push({
+                x: times,
+                y: rows.map(r => r[closeField]),
+                name: sym + (adjusted ? ' (adj)' : ''),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color, width: 1.5 },
+            });
+
+            // If adjusted, also show raw close as a faded line for comparison
+            if (adjusted && rows[0].raw_close !== undefined) {
+                traces.push({
+                    x: times,
+                    y: rows.map(r => r.raw_close),
+                    name: sym + ' (raw)',
+                    type: 'scatter',
+                    mode: 'lines',
+                    line: { color, width: 1, dash: 'dot' },
+                    opacity: 0.4,
+                });
+            }
+
+            colorIdx++;
+        }
+
+        const layout = {
+            paper_bgcolor: '#212529',
+            plot_bgcolor: '#2b3035',
+            font: { color: '#adb5bd', size: 12 },
+            margin: { t: 30, r: 30, b: 50, l: 60 },
+            xaxis: {
+                title: 'Time',
+                gridcolor: '#3a3f44',
+                type: 'date',
+            },
+            yaxis: {
+                title: adjusted ? 'Adjusted Close ($)' : 'Close ($)',
+                gridcolor: '#3a3f44',
+                tickprefix: '$',
+            },
+            legend: { orientation: 'h', y: -0.15 },
+            hovermode: 'x unified',
+        };
+
+        Plotly.newPlot('chart-plot', traces, layout, {
+            responsive: true,
+            displayModeBar: true,
+            modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+        });
+    }
+
+    function renderChartTable(data, adjusted) {
+        // Show a summary table: aggregate 1-min bars to daily for readability
+        const bySymDate = {};
+        for (const r of data) {
+            const day = r.time.split('T')[0];
+            const key = r.sym + '|' + day;
+            if (!bySymDate[key]) bySymDate[key] = { sym: r.sym, date: day, open: r.open, high: r.high, low: r.low, close: r.close, adj_close: r.adj_close, volume: 0, bars: 0 };
+            const d = bySymDate[key];
+            d.high = Math.max(d.high, r.high);
+            d.low = Math.min(d.low, r.low);
+            d.close = r.close;  // last bar's close
+            if (adjusted && r.adj_close !== undefined) d.adj_close = r.adj_close;
+            if (r.raw_close !== undefined) d.raw_close = r.raw_close;
+            d.volume += (r.volume || 0);
+            d.bars++;
+        }
+
+        const rows = Object.values(bySymDate).sort((a, b) => {
+            const sc = a.sym.localeCompare(b.sym);
+            return sc !== 0 ? sc : a.date.localeCompare(b.date);
+        });
+
+        const closeHeader = adjusted ? '<th>Adj Close</th><th>Raw Close</th>' : '<th>Close</th>';
+        let html = '<table class="table table-dark table-sm">';
+        html += '<thead><tr><th>Symbol</th><th>Date</th><th>Open</th><th>High</th><th>Low</th>';
+        html += closeHeader + '<th>Volume</th><th>Bars</th></tr></thead><tbody>';
+
+        for (const r of rows) {
+            html += '<tr>';
+            html += `<td><strong>${r.sym}</strong></td>`;
+            html += `<td>${r.date}</td>`;
+            html += `<td>$${r.open.toFixed(2)}</td>`;
+            html += `<td>$${r.high.toFixed(2)}</td>`;
+            html += `<td>$${r.low.toFixed(2)}</td>`;
+            if (adjusted && r.adj_close !== undefined) {
+                html += `<td><strong>$${r.adj_close.toFixed(2)}</strong></td>`;
+                html += `<td class="text-muted">$${(r.raw_close || r.close).toFixed(2)}</td>`;
+            } else {
+                html += `<td>$${r.close.toFixed(2)}</td>`;
+            }
+            html += `<td>${(r.volume || 0).toLocaleString()}</td>`;
+            html += `<td>${r.bars}</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        document.getElementById('chart-table-wrapper').innerHTML = html;
+    }
+
+    // =====================================================================
+    // SUBMIT TAB
+    // =====================================================================
+    let submitPollTimer = null;
+
+    function _getFormParams() {
+        return {
+            symbols: document.getElementById('bf-symbols').value,
+            start: document.getElementById('bf-start').value,
+            end: document.getElementById('bf-end').value,
+            dataset: document.getElementById('bf-dataset').value,
+            schema: document.getElementById('bf-schema').value,
+            chunk_size: parseInt(document.getElementById('bf-chunk-size').value) || 20,
+            stype_in: document.getElementById('bf-stype').value,
+        };
+    }
+
+    function _setFormDisabled(disabled) {
+        for (const id of ['bf-symbols','bf-start','bf-end','bf-dataset','bf-schema','bf-chunk-size','bf-stype']) {
+            document.getElementById(id).disabled = disabled;
+        }
+    }
+
+    async function loadSubmitTab() {
+        // Check if a backfill is already running
+        try {
+            const resp = await fetch('/api/backfill/status');
+            const data = await resp.json();
+            if (data.running) {
+                _showRunningState(data);
+                return;
+            } else if (data.pid && data.return_code !== null) {
+                _showDoneState(data);
+            }
+        } catch (e) { console.error('loadSubmitTab:', e); }
+    }
+
+    function _showRunningState(data) {
+        document.getElementById('submit-running').classList.remove('d-none');
+        document.getElementById('submit-form-wrapper').style.display = 'none';
+        document.getElementById('submit-done').classList.add('d-none');
+
+        const p = data.params || {};
+        const elapsed = Math.round(data.elapsed_s || 0);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        document.getElementById('submit-running-detail').textContent =
+            `PID ${data.pid} | ${(p.symbols || []).join(', ')} | ${p.start} to ${p.end} | ${timeStr} elapsed`;
+
+        _loadBackfillLog();
+        if (!submitPollTimer) {
+            submitPollTimer = setInterval(_pollBackfillStatus, 3000);
+        }
+    }
+
+    function _showDoneState(data) {
+        document.getElementById('submit-running').classList.add('d-none');
+        document.getElementById('submit-form-wrapper').style.display = '';
+        _setFormDisabled(false);
+        document.getElementById('bf-submit-btn').disabled = true;
+        document.getElementById('bf-submit-btn').textContent = 'Submit Backfill';
+        document.getElementById('bf-estimate-btn').disabled = false;
+        document.getElementById('bf-cost-result').classList.add('d-none');
+
+        const doneEl = document.getElementById('submit-done');
+        const ok = data.return_code === 0;
+        const cls = ok ? 'alert-success' : 'alert-danger';
+        const msg = ok
+            ? 'Backfill completed successfully. Check the Jobs tab for details.'
+            : `Backfill failed (exit code ${data.return_code}). Check logs for details.`;
+        doneEl.innerHTML = `<div class="alert ${cls} alert-dismissible fade show">${msg}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+        doneEl.classList.remove('d-none');
+    }
+
+    async function _pollBackfillStatus() {
+        try {
+            const resp = await fetch('/api/backfill/status');
+            const data = await resp.json();
+            if (data.running) {
+                _showRunningState(data);
+            } else {
+                // Process finished
+                if (submitPollTimer) { clearInterval(submitPollTimer); submitPollTimer = null; }
+                document.getElementById('submit-running').classList.add('d-none');
+                document.getElementById('submit-form-wrapper').style.display = '';
+                _setFormDisabled(false);
+                _showDoneState(data);
+            }
+        } catch (e) { console.error('_pollBackfillStatus:', e); }
+    }
+
+    async function _loadBackfillLog() {
+        try {
+            const resp = await fetch('/api/backfill/log?lines=30');
+            const data = await resp.json();
+            document.getElementById('submit-log').textContent = data.log || '(no output yet)';
+            const pre = document.getElementById('submit-log');
+            pre.scrollTop = pre.scrollHeight;
+        } catch (e) { /* ignore */ }
+    }
+
+    async function submitDryRun() {
+        const btn = document.getElementById('bf-estimate-btn');
+        const resultEl = document.getElementById('bf-cost-result');
+        btn.disabled = true;
+        btn.textContent = 'Estimating...';
+        document.getElementById('bf-submit-btn').disabled = true;
+        resultEl.classList.add('d-none');
+
+        try {
+            const resp = await fetch('/api/backfill/dry-run', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(_getFormParams()),
+            });
+            const data = await resp.json();
+
+            if (!data.ok) {
+                resultEl.innerHTML = `<div class="alert alert-danger py-2">${data.error}</div>`;
+                resultEl.classList.remove('d-none');
+                return;
+            }
+
+            const overBudget = data.over_budget;
+            const cls = overBudget ? 'alert-danger' : 'alert-info';
+            let html = `<div class="${cls} py-2 px-3" style="border-radius:6px">
+                <strong>Cost Estimate</strong><br>
+                ${data.chunks} chunk(s) &middot; <strong>$${data.estimated_cost.toFixed(4)}</strong> estimated
+                &middot; Limit: $${data.cost_limit.toFixed(2)}`;
+            if (overBudget) {
+                html += `<br><small class="text-danger">Estimated cost exceeds the safeguard limit.
+                    Reduce the date range or symbol count, or raise BACKFILL_MAX_COST_USD.</small>`;
+            }
+            html += '</div>';
+            resultEl.innerHTML = html;
+            resultEl.classList.remove('d-none');
+
+            if (!overBudget && data.chunks > 0) {
+                document.getElementById('bf-submit-btn').disabled = false;
+            }
+        } catch (e) {
+            resultEl.innerHTML = '<div class="alert alert-danger py-2">Request failed — check server logs.</div>';
+            resultEl.classList.remove('d-none');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Estimate Cost';
+        }
+    }
+
+    async function submitBackfill() {
+        const btn = document.getElementById('bf-submit-btn');
+        btn.disabled = true;
+        btn.textContent = 'Submitting...';
+        document.getElementById('bf-estimate-btn').disabled = true;
+
+        try {
+            const resp = await fetch('/api/backfill/submit', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(_getFormParams()),
+            });
+            const data = await resp.json();
+
+            if (!data.ok) {
+                const resultEl = document.getElementById('bf-cost-result');
+                resultEl.innerHTML = `<div class="alert alert-danger py-2">${data.error}</div>`;
+                resultEl.classList.remove('d-none');
+                btn.disabled = false;
+                btn.textContent = 'Submit Backfill';
+                document.getElementById('bf-estimate-btn').disabled = false;
+                return;
+            }
+
+            // Switch to running state
+            _setFormDisabled(true);
+            document.getElementById('bf-cost-result').classList.add('d-none');
+            _showRunningState({
+                running: true,
+                pid: data.pid,
+                params: data.params,
+                elapsed_s: 0,
+            });
+        } catch (e) {
+            const resultEl = document.getElementById('bf-cost-result');
+            resultEl.innerHTML = '<div class="alert alert-danger py-2">Submit failed — check server logs.</div>';
+            resultEl.classList.remove('d-none');
+            btn.disabled = false;
+            btn.textContent = 'Submit Backfill';
+            document.getElementById('bf-estimate-btn').disabled = false;
+        }
+    }
+
+    async function cancelBackfill() {
+        if (!confirm('Cancel the running backfill?')) return;
+        try {
+            await fetch('/api/backfill/cancel', { method: 'POST' });
+        } catch (e) { console.error('cancelBackfill:', e); }
+    }
+
+    // =====================================================================
+    // Tab switching and polling
+    // =====================================================================
+    function startPolling(tabId) {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = null;
+        // Clean up submit tab polling when switching away
+        if (tabId !== 'pane-submit' && submitPollTimer) {
+            clearInterval(submitPollTimer);
+            submitPollTimer = null;
+        }
+
+        switch (tabId) {
+            case 'pane-jobs':
+                loadJobs();
+                refreshTimer = setInterval(loadJobs, 5000);
+                break;
+            case 'pane-metrics':
+                loadMetricsList();
+                break;
+            case 'pane-failures':
+                loadFailures();
+                refreshTimer = setInterval(loadFailures, 5000);
+                break;
+            case 'pane-charts':
+                loadChartRequestList();
+                break;
+            case 'pane-hdb':
+                // HDB loaded on-demand via button, not auto-refresh
+                break;
+            case 'pane-disk':
+                loadDisk();
+                refreshTimer = setInterval(loadDisk, 30000);
+                break;
+            case 'pane-submit':
+                loadSubmitTab();
+                break;
+        }
+    }
+
+    // Listen for tab switches
+    document.querySelectorAll('#mainTabs button[data-bs-toggle="tab"]').forEach(btn => {
+        btn.addEventListener('shown.bs.tab', e => {
+            startPolling(e.target.getAttribute('data-bs-target').replace('#', ''));
+        });
+    });
+
+    // Metrics request selector
+    document.getElementById('metrics-request-select').addEventListener('change', e => {
+        loadMetricsDetail(e.target.value);
+    });
+
+    // HDB load button
+    document.getElementById('hdb-load-btn').addEventListener('click', loadHdbCoverage);
+
+    // Initial load
+    startPolling('pane-jobs');
+
+    // Start background backfill status poller (fires toasts from any tab)
+    _bgPollBackfill();
+    _bgPollTimer = setInterval(_bgPollBackfill, 5000);
+    </script>
+</body>
+</html>
