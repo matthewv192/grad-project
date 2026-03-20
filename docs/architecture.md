@@ -56,8 +56,8 @@ hdb/
 ```
 
 **4. Key Scripts**
-- **Shell**: `bin/backfill` (entrypoint — sources env, activates venv, calls orchestrator), `bin/monitor` (monitoring dashboard)
-- **Python**: `orchestrator.py` (API client, cost control), `metrics.py` (timing), `monitor/app.py` (Flask dashboard)
+- **Shell**: `bin/backfill` (CLI entrypoint — sources env, activates venv, calls orchestrator), `bin/monitor` (monitoring dashboard)
+- **Python**: `orchestrator.py` (API client, cost control; exposes both CLI and `backfill()` Python API), `metrics.py` (timing), `monitor/app.py` (Flask dashboard)
 - **q**: `loader.q`, `manifest.q`, `quality.q`, `jobstore.q`, `adjlib.q`
 - **Reference**: `ref_ingest.py`, `ref_tables.q`
 
@@ -69,7 +69,7 @@ hdb/
 
 | Component | Responsibility |
 |---|---|
-| `orchestrator.py` | Trading calendar filtering, chunk generation, cost guard, Databento API calls (submit/poll/download), manifest writing, job store management (batched writes), q loader invocation |
+| `orchestrator.py` | Trading calendar filtering, chunk generation, cost guard, Databento API calls (submit/poll/download), manifest writing, job store management (batched writes), q loader invocation. Callable via CLI (`bin/backfill`) or Python API (`backfill()`) |
 | `metrics.py` | Per-chunk timing across pipeline stages; aggregated `summary.json` per request |
 
 ### Staging Directory (Python ↔ q bridge)

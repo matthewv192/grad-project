@@ -99,6 +99,60 @@ calls are made for non-trading days. A live progress line updates in the
 terminal as chunks complete, followed by a summary table of rows loaded per
 exchange on success.
 
+### Python API
+
+The orchestrator can also be called directly from Python:
+
+```python
+from backfill.orchestrator import backfill
+
+result = backfill(
+    symbols=["AAPL", "MSFT", "GOOG"],
+    start="2024-06-03",
+    end="2024-06-07",
+    schema="trades",
+)
+
+print(result)
+# {'request_id': 'req_...', 'succeeded': 5, 'failed': 0,
+#  'chunks': 5, 'skipped': 0, 'wall_s': 42.17, 'dry_run': None}
+```
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `symbols` | _(required)_ | List of tickers, e.g. `["AAPL", "MSFT"]` |
+| `start` | _(required)_ | Start date inclusive (`"YYYY-MM-DD"`) |
+| `end` | _(required)_ | End date inclusive (`"YYYY-MM-DD"`) |
+| `schema` | `"trades"` | `"trades"` or `"ohlcv-1m"` |
+| `dataset` | `"XNAS.ITCH"` | Databento dataset identifier |
+| `chunk_size` | `20` | Symbols per batch job |
+| `stype_in` | `"raw_symbol"` | Databento symbol type |
+| `request_id` | `None` | Override auto-generated request ID |
+| `workers` | `12` | Max parallel chunk workers |
+| `dry_run` | `False` | Estimate cost only — no jobs submitted |
+| `download_only` | `False` | Download and stage CSVs; skip q loader |
+
+**Returns** a dict with `request_id`, `succeeded`, `failed`, `chunks`, `skipped`, `wall_s`, and `dry_run` keys.
+
+**Raises** `ValueError` for invalid parameters, `RuntimeError` if `DATABENTO_API_KEY` is not set or a request-id collision is detected.
+
+Cost estimation via the Python API:
+
+```python
+result = backfill(
+    symbols=["AAPL", "MSFT"],
+    start="2024-06-03",
+    end="2024-06-07",
+    dry_run=True,
+)
+print(f"Estimated cost: ${result['dry_run']['estimated_cost']:.4f}")
+print(f"Over budget: {result['dry_run']['over_budget']}")
+```
+
+The CLI (`bin/backfill`) continues to work exactly as before — both entry points use the same underlying logic.
+
 ### Pre-flight HDB check
 
 Before submitting any Databento jobs, the orchestrator checks the HDB for dates that already have data for the requested `(schema, dataset)` combination. Those dates are skipped automatically — no API calls are made and no cost is incurred. The output shows which dates were skipped:
@@ -401,10 +455,18 @@ The specific cause is always on the line just before the status transitions. For
 [loader] job record updated: req_... → failed
 ```
 
-For a detailed look at all job records, query the kdb job store directly:
+For a detailed look at all job records, start a q session and load the job store table:
 
 ```bash
-echo '{"op":"loadAll"}' | JOBS_FILE=$(pwd)/staging/metadata/backfill_jobs q -q code/backfill/jobstore.q
+cd ~/grad-project
+q
+```
+
+```q
+jobs: get `:staging/metadata/backfill_jobs
+select from jobs
+select from jobs where status=`failed
+select count i by status from jobs
 ```
 
 The `error_msg` and `failure_type` fields contain the exact failure reason.

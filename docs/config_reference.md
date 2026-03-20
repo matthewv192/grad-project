@@ -216,6 +216,7 @@ Each chunk has a persistent record in the kdb binary table at `staging/metadata/
 # Filter to a specific request
 ./bin/backfill --status --request-id req_20240603_120000_abc123
 
-# Query the raw kdb table directly
-echo '{"op":"loadAll"}' | JOBS_FILE=$(pwd)/staging/metadata/backfill_jobs q -q code/backfill/jobstore.q
+# Query the raw kdb table directly — start a q session then:
+# jobs: get `:staging/metadata/backfill_jobs
+# select from jobs where status=`failed
 ```

@@ -1444,14 +1444,14 @@ class TestRunChunkSadPaths(unittest.TestCase):
             client.metadata.get_cost.assert_not_called()
             client.batch.submit_job.assert_not_called()
 
-    def test_already_loaded_skips_immediately(self):
-        """A chunk in loaded status also returns True immediately."""
+    def test_already_downloaded_skips_immediately(self):
+        """A chunk in downloaded status returns True immediately."""
         with tempfile.TemporaryDirectory() as tmp:
             staging, manifest_dir, store = self._setup(tmp)
             chunk = self._make_chunk()
             record = JobRecord(
                 chunk_id="c_sad_001", request_id="req_sad",
-                status="loaded", schema="trades",
+                status="downloaded", schema="trades",
                 symbols=["AAPL"], date="2024-01-15",
             )
             store.save(record)
@@ -1478,14 +1478,14 @@ class TestRunChunkSadPaths(unittest.TestCase):
             client = MagicMock()
             result = run_chunk(client, chunk, store, staging, manifest_dir)
             self.assertTrue(result)
-            # Record should now be loaded
+            # Record stays at downloaded (q loader promotes to verified)
             updated = store.load("c_sad_001")
-            self.assertEqual(updated.status, "loaded")
+            self.assertEqual(updated.status, "downloaded")
             # No API calls
             client.batch.submit_job.assert_not_called()
 
-    def test_resume_from_downloaded_with_bad_checksum_resubmits(self):
-        """Resume with checksum mismatch should fall through to re-submit."""
+    def test_resume_from_failed_with_bad_checksum_resubmits(self):
+        """Resume from failed with checksum mismatch should fall through to re-submit."""
         with tempfile.TemporaryDirectory() as tmp:
             staging, manifest_dir, store = self._setup(tmp)
             chunk = self._make_chunk()
@@ -1493,7 +1493,7 @@ class TestRunChunkSadPaths(unittest.TestCase):
             csv_path.write_text("h1\nrow1\n")
             record = JobRecord(
                 chunk_id="c_sad_001", request_id="req_sad",
-                status="downloaded", schema="trades",
+                status="failed", schema="trades",
                 symbols=["AAPL"], date="2024-01-15",
                 file_paths=[str(csv_path)], checksum="sha256:wrong",
             )

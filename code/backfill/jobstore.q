@@ -94,6 +94,12 @@ tableToJson:{[t]
 // Dispatch on op
 // ---------------------------------------------------------------------------
 
+// Guard: exit with usage if JOBSTORE_CMD is not set
+if[0=count getenv`JOBSTORE_CMD;
+    -2 "error: JOBSTORE_CMD environment variable is required";
+    -2 "usage: JOBSTORE_CMD='{\"op\":\"loadAll\"}' JOBS_FILE=<path> q -q code/backfill/jobstore.q";
+    exit 1];
+
 cmd:.j.k getenv`JOBSTORE_CMD;
 op:cmd`op;
 

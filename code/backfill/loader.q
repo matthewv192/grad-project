@@ -313,6 +313,7 @@ loadChunkBatch:{[manifests]
     
     if[0=count pending;
         .lg.o[`loader;"all chunks in batch already loaded for date=",string[partDate]," schema=",string[schema]];
+        {[m] updateJobRecord[m`chunk_id; `verified; ""]} each manifests;
         :0j
     ];
 

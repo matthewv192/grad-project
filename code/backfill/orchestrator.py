@@ -48,7 +48,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import databento as db
-from metrics import ChunkMetrics, write_summary, print_metrics
+try:
+    from backfill.metrics import ChunkMetrics, write_summary, print_metrics
+except ImportError:
+    from metrics import ChunkMetrics, write_summary, print_metrics
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -151,7 +154,7 @@ MAX_RETRIES = _parse_env_int("BACKFILL_MAX_RETRIES", 3)
 _API_SEMAPHORE = threading.Semaphore(10)
 
 # Job statuses in lifecycle order — chunks in these states are not re-submitted
-TERMINAL_STATUSES = {"loaded", "verified"}
+TERMINAL_STATUSES = {"downloaded", "verified"}
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +178,7 @@ class JobRecord:
     """
     Persistent state for one Chunk. Stored in staging/metadata/backfill_jobs (kdb binary table).
     Status lifecycle:
-      submitted → running → downloaded → loaded → verified
+      submitted → running → downloaded → verified
                                                ↘ failed
     """
     chunk_id: str
@@ -1203,7 +1206,7 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
     """
     Execute the full pipeline for one chunk. Returns True on success.
 
-    Idempotency: if the job store already shows this chunk as loaded/verified,
+    Idempotency: if the job store already shows this chunk as downloaded/verified,
     we skip immediately. If it was previously downloaded, we verify the stored
     checksum matches the file on disk before skipping to manifest writing
     (re-downloads if the file was corrupted or deleted).
@@ -1256,8 +1259,6 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
             else:
                 log.info(f"Chunk {chunk.chunk_id}: resume OK, skipping download")
                 _write_manifests_for_record(chunk, record, manifest_dir)
-                record.status = "loaded"
-                job_store.save(record)
                 return True
 
     # ---- Resume from submitted/running? ----
@@ -1346,9 +1347,6 @@ def run_chunk(client: db.Historical, chunk: Chunk, job_store: JobStore,
                            dataset=chunk.dataset,
                            row_count=record.row_count if part_idx == 0 else None,
                            checksum=record.checksum if part_idx == 0 else None)
-
-        record.status = "loaded"
-        job_store.save(record)
 
         metrics.mark("total_end")
         metrics.save(staging_dir)
@@ -1671,6 +1669,189 @@ def _date_range(start: date, end: date) -> list[date]:
 
 
 # ---------------------------------------------------------------------------
+# Public Python API
+# ---------------------------------------------------------------------------
+
+def backfill(
+    symbols: list[str],
+    start: str,
+    end: str,
+    schema: str = DEFAULT_SCHEMA,
+    dataset: str = DEFAULT_DATASET,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    stype_in: str = "raw_symbol",
+    request_id: str | None = None,
+    workers: int = 12,
+    dry_run: bool = False,
+    download_only: bool = False,
+) -> dict:
+    """Run a backfill programmatically.
+
+    This is the Python-callable equivalent of the CLI's normal mode::
+
+        from backfill.orchestrator import backfill
+
+        result = backfill(
+            symbols=["AAPL", "MSFT"],
+            start="2024-01-16",
+            end="2024-01-18",
+            schema="trades",
+        )
+
+    Args:
+        symbols:       List of ticker symbols, e.g. ``["AAPL", "MSFT"]``.
+        start:         Start date inclusive (``"YYYY-MM-DD"``).
+        end:           End date inclusive (``"YYYY-MM-DD"``).
+        schema:        Databento schema (``"trades"`` or ``"ohlcv-1m"``).
+        dataset:       Databento dataset (default ``"XNAS.ITCH"``).
+        chunk_size:    Symbols per batch job (default 20).
+        stype_in:      Symbol type (``"raw_symbol"`` or ``"instrument_id"``).
+        request_id:    Override auto-generated request ID.
+        workers:       Max parallel chunk workers (default 12).
+        dry_run:       If True, estimate cost only — don't submit jobs.
+        download_only: If True, download and stage data but skip q loader.
+
+    Returns:
+        A dict with keys:
+          - ``request_id``: the request ID used
+          - ``succeeded``: number of chunks that succeeded
+          - ``failed``: number of chunks that failed
+          - ``chunks``: total number of chunks planned
+          - ``skipped``: number of chunks skipped (already in HDB)
+          - ``wall_s``: wall-clock seconds (None for dry runs)
+          - ``dry_run``: cost estimate dict if dry_run=True, else None
+
+    Raises:
+        ValueError:  If parameters are invalid.
+        RuntimeError: If the API key is not set or a collision is detected.
+    """
+    # ---- Validate inputs ----
+    if not symbols:
+        raise ValueError("symbols must be a non-empty list")
+    symbols = [s.strip().upper() for s in symbols if s.strip()]
+    if not symbols:
+        raise ValueError("symbols must contain at least one valid ticker")
+
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    if start_date > end_date:
+        raise ValueError(f"start ({start}) must be <= end ({end})")
+
+    if schema not in ("trades", "ohlcv-1m"):
+        raise ValueError(f"schema must be 'trades' or 'ohlcv-1m', got {schema!r}")
+
+    api_key = os.environ.get("DATABENTO_API_KEY")
+    if not api_key:
+        raise RuntimeError("DATABENTO_API_KEY is not set")
+
+    # ---- Setup ----
+    rid = (request_id
+           or f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+              f"_{uuid.uuid4().hex[:6]}")
+    _add_file_logging(PACKAGE_HOME / "logs", rid)
+
+    job_store = JobStore(STAGING_DIR)
+    manifest_dir = STAGING_DIR / "metadata" / "manifests"
+    client = db.Historical(api_key)
+
+    # ---- Collision detection for explicit request_id ----
+    if request_id:
+        existing = [r for r in job_store.load_all() if r.request_id == rid]
+        if existing:
+            existing_dates = sorted({r.date for r in existing})
+            existing_syms = sorted({s for r in existing for s in r.symbols})
+            new_dates = sorted(d.isoformat()
+                               for d in trading_days(start_date, end_date, dataset))
+            new_syms = sorted(symbols)
+            if existing_dates != new_dates or existing_syms != new_syms:
+                raise RuntimeError(
+                    f"request_id={rid!r} already exists with different parameters. "
+                    f"Existing: dates={existing_dates} syms={existing_syms}. "
+                    f"Requested: dates={new_dates} syms={new_syms}."
+                )
+            log.warning(f"request_id={rid!r} already exists — treating as idempotent resume")
+
+    # ---- Generate chunks ----
+    chunks = generate_chunks(rid, symbols, start_date, end_date,
+                             chunk_size, schema, dataset, stype_in=stype_in)
+
+    # ---- Pre-flight HDB check ----
+    hdb_dir = Path(os.environ.get("KDBHDB", str(PACKAGE_HOME / "hdb")))
+    all_dates = sorted({c.date for c in chunks})
+    existing_dates = _hdb_already_loaded_dates(hdb_dir, all_dates, schema, dataset)
+    skipped = 0
+    if existing_dates:
+        skipped = len([c for c in chunks if c.date in existing_dates])
+        chunks = [c for c in chunks if c.date not in existing_dates]
+        log.warning(f"Pre-flight: {skipped} chunk(s) already in HDB — skipped")
+        if not chunks:
+            log.info("All chunks already in HDB. Nothing to do.")
+            return {
+                "request_id": rid, "succeeded": 0, "failed": 0,
+                "chunks": 0, "skipped": skipped, "wall_s": None, "dry_run": None,
+            }
+
+    total_chunks = len(chunks)
+    log.info(f"request_id={rid} chunks={total_chunks} "
+             f"symbols={len(symbols)} dates={start}..{end}")
+
+    # ---- Dry run ----
+    if dry_run:
+        def _estimate_one(chunk: Chunk) -> tuple[Chunk, float]:
+            end_dt = (chunk.date + timedelta(days=1)).isoformat()
+            return chunk, estimate_cost(client, chunk.dataset, chunk.symbols,
+                                        chunk.schema, chunk.date.isoformat(), end_dt)
+
+        results: list[tuple[Chunk, float]] = []
+        with ThreadPoolExecutor(max_workers=min(workers, len(chunks))) as executor:
+            futures = {executor.submit(_estimate_one, c): c for c in chunks}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        total_cost = sum(cost for _, cost in results)
+        return {
+            "request_id": rid, "succeeded": 0, "failed": 0,
+            "chunks": total_chunks, "skipped": skipped, "wall_s": None,
+            "dry_run": {
+                "estimated_cost": total_cost,
+                "cost_limit": MAX_COST_USD,
+                "over_budget": total_cost > MAX_COST_USD,
+                "chunk_costs": {c.chunk_id: cost for c, cost in results},
+            },
+        }
+
+    # ---- Run chunks ----
+    log.info(f"Running {total_chunks} chunk(s) with up to {workers} worker(s)")
+    wall_start = time.time()
+    succeeded, failed = _run_chunks_parallel(
+        client, chunks, job_store, STAGING_DIR, manifest_dir,
+        max_workers=workers,
+    )
+    wall_s = time.time() - wall_start
+    job_store.flush()
+    job_store.clear_progress()
+
+    log.info(f"Chunks complete: {succeeded} succeeded, {failed} failed")
+
+    # ---- q loader + ref ingest + cleanup ----
+    if not download_only and succeeded > 0:
+        run_q_loader(PACKAGE_HOME, manifest_dir, request_id=rid)
+        _run_ref_ingest(symbols, start_date, end_date)
+        _cleanup_staging_csvs(job_store, STAGING_DIR, request_id=rid)
+
+    write_summary(STAGING_DIR, rid, wall_s=wall_s)
+
+    run_records = [r for r in job_store.load_all() if r.request_id == rid]
+    _print_run_summary(run_records, title=f"Backfill Summary — {rid}")
+
+    return {
+        "request_id": rid, "succeeded": succeeded, "failed": failed,
+        "chunks": total_chunks, "skipped": skipped, "wall_s": round(wall_s, 2),
+        "dry_run": None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -1830,151 +2011,45 @@ def main(argv=None) -> None:
         _print_run_summary(retry_records, title=f"Retry Summary — {retry_id}")
         return
 
-    # ---- Normal mode: require symbols/start/end ----
+    # ---- Normal mode: delegate to backfill() ----
     if not args.symbols or not args.start or not args.end:
         log.error("--symbols, --start, --end are required "
                      "(or use --retry-failed / --status / --load-only)")
         sys.exit(1)
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    start = date.fromisoformat(args.start)
-    end = date.fromisoformat(args.end)
 
-    request_id = (args.request_id
-                  or f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-                     f"_{uuid.uuid4().hex[:6]}")
-
-    _add_file_logging(PACKAGE_HOME / "logs", request_id)
-
-    # Detect a --request-id that collides with an existing run (different
-    # symbols/date range → silent corruption; same range → idempotent is fine).
-    if args.request_id:
-        existing = [r for r in job_store.load_all()
-                    if r.request_id == request_id]
-        if existing:
-            existing_dates = sorted({r.date for r in existing})
-            existing_syms  = sorted({s for r in existing for s in r.symbols})
-            new_dates = sorted(d.isoformat()
-                                for d in trading_days(start, end, args.dataset))
-            new_syms = sorted(symbols)
-            if existing_dates != new_dates or existing_syms != new_syms:
-                log.error(
-                    f"request_id={request_id!r} already exists in the job store "
-                    f"with different parameters. "
-                    f"Existing: dates={existing_dates} syms={existing_syms}. "
-                    f"Requested: dates={new_dates} syms={new_syms}. "
-                    "Use a different --request-id or omit it to auto-generate one."
-                )
-                sys.exit(1)
-            log.warning(
-                f"request_id={request_id!r} already exists with matching "
-                "parameters — treating as idempotent resume"
-            )
-
-    chunks = generate_chunks(request_id, symbols, start, end,
-                             args.chunk_size, args.schema, args.dataset,
-                             stype_in=args.stype_in)
-
-    # ---- Pre-flight HDB check: skip dates already loaded for this exchange ----
-    hdb_dir = Path(os.environ.get("KDBHDB", str(PACKAGE_HOME / "hdb")))
-    all_dates = sorted({c.date for c in chunks})
-    existing_dates = _hdb_already_loaded_dates(
-        hdb_dir, all_dates, args.schema, args.dataset)
-    if existing_dates:
-        skipped_chunks = [c for c in chunks if c.date in existing_dates]
-        chunks = [c for c in chunks if c.date not in existing_dates]
-        log.warning(
-            f"Pre-flight: {len(skipped_chunks)} chunk(s) already in HDB "
-            f"(exchange={args.dataset} schema={args.schema}) — skipped before API submission. "
-            f"Dates: {sorted(str(d) for d in existing_dates)}"
+    try:
+        result = backfill(
+            symbols=symbols,
+            start=args.start,
+            end=args.end,
+            schema=args.schema,
+            dataset=args.dataset,
+            chunk_size=args.chunk_size,
+            stype_in=args.stype_in,
+            request_id=args.request_id,
+            workers=args.workers,
+            dry_run=args.dry_run,
+            download_only=args.download_only,
         )
-        print(f"\nNOTE: {len(skipped_chunks)} chunk(s) already in HDB — skipping "
-              f"(saves API cost):")
-        for d in sorted(existing_dates):
-            print(f"  {args.dataset}  {args.schema}  {d}  — already loaded")
-        if not chunks:
-            print("\nAll requested chunks already in HDB. Nothing to do.\n")
-            log.info("Pre-flight: all chunks already present, exiting cleanly")
-            return
-        print()
-
-    log.info(f"request_id={request_id} chunks={len(chunks)} "
-                f"symbols={len(symbols)} dates={start}..{end}")
-
-    # ---- Dry run: cost estimate and chunk plan ----
-    if args.dry_run:
-        print(f"\nChunk plan for {request_id}:")
-        print(f"  {'chunk_id':<50} {'symbols':>7} {'est_cost':>10}")
-        print(f"  {'-'*70}")
-
-        # Estimate costs in parallel (up to 10 concurrent via _API_SEMAPHORE)
-        def _estimate_one(chunk: Chunk) -> tuple[Chunk, float]:
-            end_date = (chunk.date + timedelta(days=1)).isoformat()
-            return chunk, estimate_cost(client, chunk.dataset, chunk.symbols,
-                                        chunk.schema,
-                                        chunk.date.isoformat(), end_date)
-
-        results: list[tuple[Chunk, float]] = []
-        with ThreadPoolExecutor(max_workers=min(args.workers, len(chunks))) as executor:
-            futures = {executor.submit(_estimate_one, c): c for c in chunks}
-            for future in as_completed(futures):
-                results.append(future.result())
-
-        # Print in original chunk order
-        cost_by_id = {c.chunk_id: cost for c, cost in results}
-        total_cost = 0.0
-        for chunk in chunks:
-            cost = cost_by_id[chunk.chunk_id]
-            total_cost += cost
-            print(f"  {chunk.chunk_id:<50} {len(chunk.symbols):>7} ${cost:>9.4f}")
-        print(f"\n  Total: {len(chunks)} chunk(s), estimated ${total_cost:.4f}")
-        print(f"  Limit:  ${MAX_COST_USD:.2f}\n")
-        return
-
-    # ---- Run all chunks (parallel) ----
-    log.info(f"Running {len(chunks)} chunk(s) with up to {args.workers} worker(s)")
-    _wall_start = time.time()
-    succeeded, failed = _run_chunks_parallel(
-        client, chunks, job_store, STAGING_DIR, manifest_dir,
-        max_workers=args.workers,
-    )
-    _wall_s = time.time() - _wall_start
-    job_store.flush()
-    job_store.clear_progress()
-
-    log.info(f"Chunks complete: {succeeded} succeeded, {failed} failed")
-
-    if failed:
-        log.warning(
-            f"{failed} chunk(s) failed. Run with --retry-failed to requeue, "
-            f"or check staging/metadata/backfill_jobs for details."
-        )
-
-    # ---- Invoke q loader for all downloaded manifests ----
-    if not skip_load and succeeded > 0:
-        try:
-            run_q_loader(PACKAGE_HOME, manifest_dir, request_id=request_id)
-        except Exception as exc:
-            log.exception(f"q loader failed: {exc}")
-            sys.exit(1)
-        # ---- Update reference data (corp actions + adj factors) ----
-        _run_ref_ingest(symbols, start, end)
-        # ---- Clean up staging CSVs for verified chunks ----
-        _cleanup_staging_csvs(job_store, STAGING_DIR, request_id=request_id)
-
-    # Emit metrics summary for this request
-    summary_path = write_summary(STAGING_DIR, request_id, wall_s=_wall_s)
-    if summary_path:
-        log.info(f"Metrics summary: {summary_path}")
-
-    # ---- Terminal summary ----
-    run_records = [r for r in job_store.load_all() if r.request_id == request_id]
-    _print_run_summary(run_records, title=f"Backfill Summary — {request_id}")
-
-    if failed > 0:
+    except (ValueError, RuntimeError) as exc:
+        log.error(str(exc))
         sys.exit(1)
 
-    log.info(f"Backfill complete: request_id={request_id}")
+    # Print dry-run summary (parsed by the monitoring dashboard)
+    if args.dry_run and result.get("dry_run"):
+        dr = result["dry_run"]
+        print(f"\nChunk plan for {result['request_id']}:")
+        print(f"  {'chunk_id':<50} {'est_cost':>10}")
+        print(f"  {'-'*62}")
+        for cid, cost in dr["chunk_costs"].items():
+            print(f"  {cid:<50} ${cost:>9.4f}")
+        print(f"\n  Total: {result['chunks']} chunk(s), estimated ${dr['estimated_cost']:.4f}")
+        print(f"  Limit:  ${dr['cost_limit']:.2f}\n")
+
+    if result["failed"] > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

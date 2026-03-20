@@ -15,6 +15,9 @@ PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PACKAGE_DIR"
 
+# Source environment (sets KDBHDB, STAGING_DIR, etc.)
+source "$PACKAGE_DIR/setenv.sh"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
