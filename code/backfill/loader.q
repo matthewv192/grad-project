@@ -180,16 +180,16 @@ readOhlcvCSV:{[csvPath]
  };
 
 // ---------------------------------------------------------------------------
-// checkExchangeLoaded — returns 1b if the given exchange/dataset is already present
-// in a partition, 0b if the partition is missing or the exchange is absent.
-// Reads only the exchange column file for efficiency.
-checkExchangeLoaded:{[partDateDir;tableName;exchange]
+// checkSymbolsLoaded — returns 1b if ALL given symbols are already present
+// in a partition, 0b if the partition is missing or any symbol is absent.
+// Reads only the sym column file for efficiency.
+checkSymbolsLoaded:{[partDateDir;tableName;syms]
     if[not tableName in key partDateDir; :0b];
-    if[not `exchange in key ` sv partDateDir,tableName; :0b];   // pre-schema partition without exchange col
-    exFile:` sv partDateDir,tableName,`exchange;
+    if[not `sym in key ` sv partDateDir,tableName; :0b];
+    symFile:` sv partDateDir,tableName,`sym;
     // .Q.dpft enumerates ALL symbol columns; unenumerate before comparing.
     // Protected eval: get can fail if sym enumeration file is missing or corrupt.
-    .[{[exch;ef] exch in `$string get ef};(exchange;exFile);{[e] 0b}]
+    .[{[s;sf] all s in `$string get sf};(syms;symFile);{[e] 0b}]
  };
 
 // ---------------------------------------------------------------------------
@@ -302,13 +302,11 @@ loadChunkBatch:{[manifests]
     
     partDateDir:` sv HDB_DIR,`$string partDate;
 
-    // Fast-path idempotency: skip any manifest whose (date, schema, exchange)
-    // triple is already present in the HDB partition.  The REQUEST_ID filter
-    // in processManifests (manifest.q) ensures we only see manifests for this
-    // run, so the exchange check is safe: if the exchange is present it was
-    // written by a previous completed run for this exact chunk, not by a
-    // concurrent parallel run for a different request.
-    pendingIdx:where not {[partDateDir;schema;m] checkExchangeLoaded[partDateDir;schema;m`exchange]}[partDateDir;schema;] each manifests;
+    // Fast-path idempotency: skip any manifest whose symbols are ALL already
+    // present in the HDB partition.  Checks at the symbol level so that adding
+    // new symbols (e.g. MSFT) to a partition that already has other symbols
+    // from the same exchange (e.g. NVDA, GOOG) is not incorrectly skipped.
+    pendingIdx:where not {[partDateDir;schema;m] checkSymbolsLoaded[partDateDir;schema;m`symbols]}[partDateDir;schema;] each manifests;
     pending:manifests pendingIdx;
     
     if[0=count pending;

@@ -226,3 +226,58 @@ def coverage_matrix(hdb_dir: Path, table: str = "trades",
         return json.loads(out)
     except json.JSONDecodeError:
         return []
+
+
+def run_query(hdb_dir: Path, query: str, limit: int = 1000) -> dict:
+    """Run an arbitrary qSQL expression against the HDB and return results as JSON.
+
+    Returns a dict with ``ok`` (bool) and either ``error`` (str) or result fields.
+    Table results include ``isTable``, ``total``, ``truncated``, ``columns``, ``data``.
+    Non-table results include ``isTable`` (false) and ``data`` (string representation).
+    """
+    if not hdb_dir.exists():
+        return {"ok": False, "error": "HDB directory does not exist"}
+
+    script = (
+        'hdb:hsym`$getenv`KDBHDB;\n'
+        'symFile:` sv hdb,`sym;\n'
+        'if[count key symFile; `sym set get symFile];\n'
+        'system "l ",1_string hdb;\n'
+        'qry:getenv`QQUERY;\n'
+        'lim:"J"$getenv`QLIMIT;\n'
+        'res:@[value;qry;{[e] -1 .j.j `ok`error!(0b;e); exit 0}];\n'
+        'if[.Q.qt res;\n'
+        '  if[99h=type res; res:0!res];\n'
+        '  n:count res;\n'
+        '  res:lim sublist res;\n'
+        '  cs:cols res;\n'
+        '  typs:type each value flip res;\n'
+        '  ec:cs where typs=20h;\n'
+        '  res:{[t;c] @[t;c;{`$string x}]}/ [res;ec];\n'
+        '  -1 .j.j `ok`isTable`total`truncated`columns`data!(1b;1b;n;n>count res;cs;res);\n'
+        '  exit 0\n'
+        '];\n'
+        '-1 .j.j `ok`isTable`data!(1b;0b;.Q.s1 res);\n'
+        'exit 0\n'
+    )
+
+    env = {**os.environ, "TZ": "UTC", "KDBHDB": str(hdb_dir),
+           "QQUERY": query, "QLIMIT": str(limit)}
+    try:
+        result = subprocess.run(
+            ["q", "-q"], input=script, text=True,
+            capture_output=True, cwd=str(hdb_dir), env=env, timeout=30,
+        )
+        if result.returncode != 0:
+            err = result.stderr.strip() or "Query failed"
+            return {"ok": False, "error": err}
+        out = result.stdout.strip()
+        if not out:
+            return {"ok": False, "error": "No output from query"}
+        return json.loads(out)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Query timed out after 30 seconds"}
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "Invalid response from q process"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

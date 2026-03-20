@@ -36,7 +36,7 @@ if _BACKFILL_DIR not in sys.path:
 
 from backfill.orchestrator import JobStore, STAGING_DIR, PACKAGE_HOME
 from backfill.metrics import load_chunk_metrics
-from monitor.hdb_query import list_partitions, partition_detail, coverage_matrix, query_ohlcv
+from monitor.hdb_query import list_partitions, partition_detail, coverage_matrix, query_ohlcv, run_query
 
 log = logging.getLogger("monitor")
 
@@ -210,6 +210,17 @@ def api_hdb_coverage():
         lambda: coverage_matrix(_HDB_DIR, table, start, end),
         ttl=15.0,
     ))
+
+
+@app.route("/api/query", methods=["POST"])
+def api_query():
+    """Run an arbitrary qSQL expression against the HDB."""
+    data = request.get_json(force=True, silent=True) or {}
+    query = (data.get("query") or "").strip()
+    if not query:
+        return jsonify({"ok": False, "error": "query is required"}), 400
+    limit = min(int(data.get("limit", 1000)), 10000)
+    return jsonify(run_query(_HDB_DIR, query, limit))
 
 
 @app.route("/api/disk")
