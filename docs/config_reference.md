@@ -91,6 +91,7 @@ The dashboard exposes JSON API endpoints for integration with external tools:
 | `GET /api/hdb/coverage?table=trades&start=...&end=...` | Symbol × date coverage matrix |
 | `GET /api/disk` | Directory sizes for staging, hdb, and logs |
 | `GET /api/hdb/ohlcv?symbols=...&start=...&end=...&adjusted=true` | Daily OHLCV data for charting (optionally adjusted) |
+| `POST /api/query` | Run an arbitrary qSQL expression against the HDB. Body: `{"query": "...", "limit": 1000}`. 30s timeout, max 10,000 rows. |
 | `POST /api/backfill/dry-run` | Estimate cost for a backfill request without submitting |
 | `POST /api/backfill/submit` | Submit a new backfill request |
 | `POST /api/backfill/cancel` | Cancel a running backfill |

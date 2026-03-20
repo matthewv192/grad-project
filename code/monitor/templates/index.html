@@ -70,6 +70,10 @@
                         data-bs-target="#pane-hdb" type="button" role="tab">HDB Coverage</button>
             </li>
             <li class="nav-item">
+                <button class="nav-link" id="tab-query" data-bs-toggle="tab"
+                        data-bs-target="#pane-query" type="button" role="tab">qSQL Query</button>
+            </li>
+            <li class="nav-item">
                 <button class="nav-link" id="tab-disk" data-bs-toggle="tab"
                         data-bs-target="#pane-disk" type="button" role="tab">Disk</button>
             </li>
@@ -170,12 +174,72 @@
                             <option value="ohlcv_1m">ohlcv_1m</option>
                         </select>
                     </div>
+                    <div class="col-auto" style="position:relative">
+                        <label class="form-label form-label-sm mb-0">Symbols</label>
+                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="hdb-sym-btn" style="min-width:180px;text-align:left">
+                            All symbols
+                        </button>
+                        <div id="hdb-sym-dropdown" class="card bg-dark border-secondary" style="display:none;position:absolute;z-index:10;max-height:260px;overflow-y:auto;min-width:180px;padding:6px 0;">
+                        </div>
+                    </div>
                     <div class="col-auto">
                         <button class="btn btn-sm btn-outline-light" id="hdb-load-btn">Load Coverage</button>
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-sm btn-outline-secondary" id="hdb-clear-filter" style="display:none">Clear Filter</button>
                     </div>
                 </div>
                 <div id="hdb-partitions" class="mb-4"></div>
                 <div id="hdb-coverage"></div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- qSQL QUERY TAB -->
+            <!-- ============================================================ -->
+            <div class="tab-pane fade" id="pane-query" role="tabpanel">
+                <div class="row mb-2">
+                    <div class="col-12">
+                        <label class="form-label form-label-sm mb-1">qSQL Expression <span class="text-muted" style="font-size:0.75rem">(Ctrl+Enter to run)</span></label>
+                        <textarea id="query-input" class="form-control form-control-sm bg-dark text-light border-secondary"
+                                  rows="3" spellcheck="false"
+                                  style="font-family:'Consolas','Monaco','Courier New',monospace;font-size:0.9rem;resize:vertical"
+                                  placeholder="select vwap: size wavg price, volume: sum size by sym from trades where date = 2024.01.15"></textarea>
+                    </div>
+                </div>
+                <div class="row mb-2 g-2 align-items-end">
+                    <div class="col-auto">
+                        <label class="form-label form-label-sm mb-0">Row limit</label>
+                        <input type="number" id="query-limit" class="form-control form-control-sm bg-dark text-light border-secondary" value="1000" min="1" max="10000" style="width:90px">
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-sm btn-primary" id="query-run-btn">Run</button>
+                    </div>
+                    <div class="col-auto" id="query-timing" style="display:none">
+                        <span class="text-muted" style="font-size:0.8rem"></span>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <span class="text-muted" style="font-size:0.75rem">Examples:</span>
+                    <button class="btn btn-sm btn-outline-secondary query-example ms-1" style="font-size:0.72rem"
+                            data-query="select count i by date from trades">counts by date</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select vwap: size wavg price, volume: sum size by sym from trades where date = 2024.01.15">VWAP by sym</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select vwap: size wavg price, volume: sum size by sym, 5 xbar time.minute from trades where date = 2024.01.15, sym = `AAPL">5-min VWAP</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select open: first price, high: max price, low: min price, close: last price, volume: sum size by sym, 1 xbar time.minute from trades where date = 2024.01.15, sym = `AAPL">1-min OHLCV</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="meta trades">meta</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select twap: avg price by sym from trades where date = 2024.01.15">TWAP</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select bid: min price, ask: max price, spread: max[price] - min[price] by sym, 5 xbar time.minute from trades where date = 2024.01.15, sym = `AAPL">spread</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select volume: sum size by sym from trades where date = 2024.01.15">volume by sym</button>
+                    <button class="btn btn-sm btn-outline-secondary query-example" style="font-size:0.72rem"
+                            data-query="select trades: count i, volume: sum size, avg_price: avg price by sym from trades where date = 2024.01.15">trade summary</button>
+                </div>
+                <div id="query-result"></div>
             </div>
 
             <!-- ============================================================ -->
@@ -675,46 +739,95 @@
     // =====================================================================
     // HDB COVERAGE TAB
     // =====================================================================
+    let _hdbRawData = [];  // cache full dataset for client-side filtering
+
     async function loadHdbCoverage() {
         const table = document.getElementById('hdb-table').value;
         document.getElementById('hdb-coverage').innerHTML = '<p class="text-muted">Loading HDB data (this may take a moment)...</p>';
 
         try {
             const resp = await fetch(`/api/hdb/coverage?table=${table}`);
-            const data = await resp.json();
-            renderCoverage(data, table);
+            _hdbRawData = await resp.json();
+            populateSymFilter(_hdbRawData);
+            renderCoverage(_hdbRawData, table);
         } catch (e) {
             document.getElementById('hdb-coverage').innerHTML = '<p class="text-danger">Failed to load HDB data.</p>';
             console.error('loadHdbCoverage:', e);
         }
     }
 
+    function populateSymFilter(data) {
+        const dropdown = document.getElementById('hdb-sym-dropdown');
+        const syms = [...new Set(data.map(d => d.sym))].sort();
+        dropdown.innerHTML = syms.map(s =>
+            `<label class="dropdown-item d-flex align-items-center gap-2 py-1 px-3" style="cursor:pointer;font-size:0.85rem">` +
+            `<input type="checkbox" class="form-check-input mt-0 hdb-sym-cb" value="${s}"> ${s}</label>`
+        ).join('');
+        dropdown.querySelectorAll('.hdb-sym-cb').forEach(cb => {
+            cb.addEventListener('change', () => {
+                updateSymBtnLabel();
+                if (_hdbRawData.length) renderCoverage(_hdbRawData, document.getElementById('hdb-table').value);
+            });
+        });
+    }
+
+    function updateSymBtnLabel() {
+        const checked = [...document.querySelectorAll('.hdb-sym-cb:checked')];
+        const btn = document.getElementById('hdb-sym-btn');
+        if (!checked.length) btn.textContent = 'All symbols';
+        else if (checked.length <= 3) btn.textContent = checked.map(c => c.value).join(', ');
+        else btn.textContent = `${checked.length} selected`;
+    }
+
+    function getFilteredSyms() {
+        const checked = [...document.querySelectorAll('.hdb-sym-cb:checked')].map(c => c.value);
+        return checked.length ? checked : null;
+    }
+
     function renderCoverage(data, table) {
         if (!data.length) {
             document.getElementById('hdb-coverage').innerHTML = '<p class="text-muted">No data found in HDB.</p>';
+            document.getElementById('hdb-clear-filter').style.display = 'none';
             return;
         }
 
-        // Pivot: data is [{sym, date, rows}, ...]
-        const syms = [...new Set(data.map(d => d.sym))].sort();
-        const dates = [...new Set(data.map(d => d.date))].sort();
+        const filterSyms = getFilteredSyms();
+        const filtered = filterSyms ? data.filter(d => filterSyms.includes(d.sym)) : data;
+        document.getElementById('hdb-clear-filter').style.display = filterSyms ? '' : 'none';
+
+        const syms = [...new Set(filtered.map(d => d.sym))].sort();
+        const dates = [...new Set(filtered.map(d => d.date))].sort();
         const lookup = {};
         let totalRows = 0;
-        for (const d of data) {
+        for (const d of filtered) {
             lookup[d.sym + '|' + d.date] = d.rows;
             totalRows += d.rows;
         }
 
-        let html = `<p class="text-muted mb-2">${table}: ${syms.length} symbol(s), ${dates.length} partition(s), ${totalRows.toLocaleString()} total rows</p>`;
-        html += '<div style="overflow-x:auto"><table class="table table-dark table-sm" style="font-size:0.8rem">';
-        html += '<thead><tr><th>Sym</th>';
-        for (const d of dates) {
-            html += `<th class="text-center" style="writing-mode:vertical-lr;transform:rotate(180deg);height:90px;font-size:0.7rem">${d}</th>`;
+        // Format date for header: "Jan 15 '24" style
+        function fmtDate(d) {
+            // d is "YYYY.MM.DD"
+            const parts = d.split('.');
+            const dt = new Date(parts[0], parseInt(parts[1]) - 1, parts[2]);
+            const m = dt.toLocaleDateString('en-US', { month: 'short' });
+            const day = dt.getDate();
+            const yr = dt.getFullYear().toString().slice(2);
+            return `${m} ${day} '${yr}`;
         }
-        html += '<th class="text-end">Total</th></tr></thead><tbody>';
+
+        let html = `<div class="d-flex align-items-center gap-3 mb-3">`;
+        html += `<span class="text-muted" style="font-size:0.85rem">${table}: <strong>${syms.length}</strong> symbol(s), <strong>${dates.length}</strong> partition(s), <strong>${totalRows.toLocaleString()}</strong> total rows</span>`;
+        html += `</div>`;
+
+        html += '<div style="overflow-x:auto"><table class="table table-dark table-bordered table-hover mb-0" style="font-size:0.82rem">';
+        html += '<thead><tr style="background:#2b3035;color:#adb5bd"><th style="position:sticky;left:0;z-index:1;background:#2b3035;min-width:80px">Symbol</th>';
+        for (const d of dates) {
+            html += `<th class="text-center" style="white-space:nowrap;padding:6px 10px;font-weight:500">${fmtDate(d)}</th>`;
+        }
+        html += '<th class="text-end" style="min-width:80px">Total</th></tr></thead><tbody>';
 
         for (const sym of syms) {
-            html += `<tr><td><strong>${sym}</strong></td>`;
+            html += `<tr><td style="position:sticky;left:0;z-index:1;background:#212529;font-weight:600">${sym}</td>`;
             let symTotal = 0;
             for (const d of dates) {
                 const rows = lookup[sym + '|' + d] || 0;
@@ -725,19 +838,105 @@
                     html += '<td class="text-center coverage-cell coverage-empty">-</td>';
                 }
             }
-            html += `<td class="text-end">${symTotal.toLocaleString()}</td></tr>`;
+            html += `<td class="text-end" style="font-weight:600">${symTotal.toLocaleString()}</td></tr>`;
         }
 
         // Totals row
-        html += '<tr class="border-top"><td><strong>Total</strong></td>';
+        html += '<tr style="border-top:2px solid #495057"><td style="position:sticky;left:0;z-index:1;background:#2b3035;font-weight:700">Total</td>';
         for (const d of dates) {
-            const colTotal = data.filter(r => r.date === d).reduce((a, r) => a + r.rows, 0);
-            html += `<td class="text-center" style="font-size:0.7rem">${colTotal.toLocaleString()}</td>`;
+            const colTotal = filtered.filter(r => r.date === d).reduce((a, r) => a + r.rows, 0);
+            html += `<td class="text-center" style="font-weight:600;font-size:0.78rem">${colTotal.toLocaleString()}</td>`;
         }
-        html += `<td class="text-end"><strong>${totalRows.toLocaleString()}</strong></td></tr>`;
+        html += `<td class="text-end" style="font-weight:700">${totalRows.toLocaleString()}</td></tr>`;
 
         html += '</tbody></table></div>';
         document.getElementById('hdb-coverage').innerHTML = html;
+    }
+
+    // =====================================================================
+    // qSQL QUERY TAB
+    // =====================================================================
+    function escapeHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    async function runQuery() {
+        const query = document.getElementById('query-input').value.trim();
+        if (!query) return;
+        const limit = parseInt(document.getElementById('query-limit').value) || 1000;
+        const resultDiv = document.getElementById('query-result');
+        const timingDiv = document.getElementById('query-timing');
+        const btn = document.getElementById('query-run-btn');
+
+        btn.disabled = true;
+        btn.textContent = 'Running...';
+        resultDiv.innerHTML = '<p class="text-muted">Executing query...</p>';
+        timingDiv.style.display = 'none';
+
+        const t0 = performance.now();
+        try {
+            const resp = await fetch('/api/query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({query, limit}),
+            });
+            const data = await resp.json();
+            const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+            timingDiv.style.display = '';
+            timingDiv.querySelector('span').textContent = `${elapsed}s`;
+
+            if (!data.ok) {
+                resultDiv.innerHTML = `<div class="alert alert-danger py-2" style="font-size:0.85rem"><strong>Error:</strong> <code>${escapeHtml(data.error)}</code></div>`;
+                return;
+            }
+
+            if (data.isTable) {
+                renderQueryTable(data, resultDiv);
+            } else {
+                resultDiv.innerHTML = `<pre class="bg-dark text-light p-3 border border-secondary rounded" style="font-size:0.85rem;max-height:500px;overflow:auto">${escapeHtml(data.data)}</pre>`;
+            }
+        } catch (e) {
+            resultDiv.innerHTML = `<div class="alert alert-danger py-2">Request failed: ${escapeHtml(e.message)}</div>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Run';
+        }
+    }
+
+    function renderQueryTable(data, container) {
+        const {columns, total, truncated} = data;
+        const rows = data.data;  // array of row objects [{col:val, ...}, ...]
+        const nRows = rows.length;
+
+        let info = `<span class="text-muted" style="font-size:0.8rem">${total.toLocaleString()} row(s)`;
+        if (truncated) info += ` — showing first ${nRows.toLocaleString()}`;
+        info += `, ${columns.length} column(s)</span>`;
+
+        let html = info;
+        html += '<div style="overflow-x:auto;max-height:600px;overflow-y:auto" class="mt-2">';
+        html += '<table class="table table-dark table-bordered table-hover table-sm mb-0" style="font-size:0.82rem">';
+        html += '<thead><tr style="background:#2b3035;color:#adb5bd;position:sticky;top:0;z-index:1">';
+        for (const c of columns) {
+            html += `<th style="white-space:nowrap;padding:4px 8px">${escapeHtml(String(c))}</th>`;
+        }
+        html += '</tr></thead><tbody>';
+
+        for (const row of rows) {
+            html += '<tr>';
+            for (const c of columns) {
+                const val = row[c];
+                const display = val === null || val === undefined ? '' : String(val);
+                const isNum = typeof val === 'number';
+                html += `<td style="white-space:nowrap;padding:3px 8px;${isNum ? 'text-align:right' : ''}">${escapeHtml(display)}</td>`;
+            }
+            html += '</tr>';
+        }
+
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
     }
 
     // =====================================================================
@@ -1210,6 +1409,10 @@
             case 'pane-hdb':
                 // HDB loaded on-demand via button, not auto-refresh
                 break;
+            case 'pane-query':
+                // Query tab is on-demand, no polling
+                document.getElementById('query-input').focus();
+                break;
             case 'pane-disk':
                 loadDisk();
                 refreshTimer = setInterval(loadDisk, 30000);
@@ -1232,8 +1435,36 @@
         loadMetricsDetail(e.target.value);
     });
 
-    // HDB load button
+    // HDB load button + dropdown toggle + clear filter
     document.getElementById('hdb-load-btn').addEventListener('click', loadHdbCoverage);
+    document.getElementById('hdb-sym-btn').addEventListener('click', () => {
+        const dd = document.getElementById('hdb-sym-dropdown');
+        dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', (e) => {
+        const dd = document.getElementById('hdb-sym-dropdown');
+        const btn = document.getElementById('hdb-sym-btn');
+        if (!dd.contains(e.target) && e.target !== btn) dd.style.display = 'none';
+    });
+    document.getElementById('hdb-clear-filter').addEventListener('click', () => {
+        document.querySelectorAll('.hdb-sym-cb').forEach(cb => cb.checked = false);
+        updateSymBtnLabel();
+        if (_hdbRawData.length) renderCoverage(_hdbRawData, document.getElementById('hdb-table').value);
+    });
+
+    // qSQL Query tab events
+    document.getElementById('query-run-btn').addEventListener('click', runQuery);
+    document.getElementById('query-input').addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            runQuery();
+        }
+    });
+    document.querySelectorAll('.query-example').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.getElementById('query-input').value = btn.dataset.query;
+        });
+    });
 
     // Initial load
     startPolling('pane-jobs');

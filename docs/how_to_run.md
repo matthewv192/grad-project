@@ -555,17 +555,20 @@ Override the port with `MONITOR_PORT`:
 MONITOR_PORT=9090 ./bin/monitor
 ```
 
-The dashboard has five tabs:
+The dashboard has the following tabs:
 
 | Tab | Content | Refresh |
 |-----|---------|---------|
 | **Jobs** | Request list with status progress bars. Click a row to expand per-chunk detail (status, rows, errors). | Every 5s |
+| **Submit** | Submit new backfill requests with dry-run cost estimation, cancel running jobs, retry failed chunks. | On-demand |
+| **Charts** | OHLCV data explorer with optional adjusted prices. | On selection |
 | **Metrics** | Select a request to see a stacked bar chart of submit/poll/download/load timing per chunk, plus summary cards (total rows, wall time, bytes). | On selection |
 | **Failures** | Failed chunks grouped by failure type with date, symbols, retry count, and error message. | Every 5s |
-| **HDB Coverage** | Sym x date heatmap with row counts per cell. Select `trades` or `ohlcv_1m`. | On-demand (button) |
+| **HDB Coverage** | Sym x date heatmap with row counts per cell. Select `trades` or `ohlcv_1m`, filter by symbol via dropdown. | On-demand (button) |
+| **qSQL Query** | Run arbitrary qSQL expressions against the HDB. Includes example buttons for VWAP, TWAP, spread, volume, and trade summaries. Results render as scrollable tables with row counts. 30s timeout, configurable row limit (default 1000, max 10,000). | On-demand |
 | **Disk** | Size of `staging/`, `hdb/`, and `logs/` directories. | Every 30s |
 
-The dashboard can also submit new backfill requests (with dry-run cost estimation), cancel running jobs, and retry failed chunks. It reads from the same files the CLI uses: the kdb job store, metrics JSONs, and HDB partitions. During an active backfill, the Jobs tab updates live as chunks progress through the pipeline.
+The dashboard reads from the same files the CLI uses: the kdb job store, metrics JSONs, and HDB partitions. During an active backfill, the Jobs tab updates live as chunks progress through the pipeline.
 
 ### Monitoring disk usage
 

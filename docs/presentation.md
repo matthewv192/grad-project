@@ -102,10 +102,11 @@ Walk through these concepts (no need to read every line):
 
 ### 3.6 Monitoring Dashboard (`code/monitor/`)
 - Flask app on port 8080
-- Tabs: Jobs, Metrics, Failures, HDB Coverage, Disk
+- Tabs: Jobs, Submit, Charts, Metrics, Failures, HDB Coverage, qSQL Query, Disk
 - Can submit new backfill requests, cancel running jobs, retry failed ones
 - Live progress updates via `.progress.json`
 - OHLCV charting and log streaming
+- qSQL Query tab: run arbitrary queries against the HDB (VWAP, TWAP, spread, etc.)
 
 ---
 

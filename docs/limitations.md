@@ -118,8 +118,8 @@ Factors are only computed and stored for dates that appear in the HDB or the cur
 
 - **No authentication.** The Flask dashboard binds to `0.0.0.0` by default and has no login or access control. Do not expose it on a public network without a reverse proxy or firewall.
 - **Development server only.** `bin/monitor` runs Flask's built-in development server (single-threaded, not production-hardened). For production use, put it behind gunicorn or a similar WSGI server.
-- **Read-only.** The dashboard cannot submit, retry, or modify any data. All writes go through `bin/backfill`.
-- **q subprocess overhead.** HDB queries spawn a short-lived q process per request (cached for 3 seconds). Under high polling rates this can accumulate process spawns.
+- **No query restrictions.** The qSQL Query tab executes arbitrary q expressions via subprocess. This is intended for local/internal use only — do not expose to untrusted users.
+- **q subprocess overhead.** HDB queries and qSQL queries spawn a short-lived q process per request (cached for 3 seconds). Under high polling rates this can accumulate process spawns. qSQL queries have a 30-second timeout.
 
 ---
 
